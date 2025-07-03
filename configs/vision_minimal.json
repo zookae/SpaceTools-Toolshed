@@ -1,0 +1,20 @@
+{
+    "vlm": {
+        "num_actors": 1, 
+        "resources": {"num_gpus": 1}, 
+        "conda_env": "tool_vlm",
+        "timeout": 600},
+    "sam2": {
+        "num_actors": 1, 
+        "resources": {"num_gpus": 1}, 
+        "conda_env": "tool_sam2"},
+    "depth_estimator": {
+        "num_actors": 1, 
+        "resources": {"num_gpus": 1}, 
+        "conda_env": "tool_depth", 
+        "timeout": 100,
+        "args": {
+            "checkpoint_path": "checkpoints/depth_pro.pt"
+        }
+    }
+}

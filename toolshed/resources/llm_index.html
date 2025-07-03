@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpaceTools Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="main">
+            <div class="sidebar">
+                <h2 class="sidebar-title">SpaceTools Toolshed Agent</h2>
+                <h3>Available Tools</h3>
+                <div id="tools-list" class="tools-list">
+                    Loading tools...
+                </div>
+
+                <div style="margin-top: 30px;">
+                    <h3>LLM Configuration</h3>
+
+                    <!-- Provider Selection -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Provider</label>
+                        <select id="provider-dropdown" onchange="changeProvider()" style="width: 100%; padding: 8px; border: 1px solid #e2e8f0; border-radius: 4px;">
+                            <option value="">Loading providers...</option>
+                        </select>
+                    </div>
+
+                    <!-- Model Selection -->
+                    <div>
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Model</label>
+                        <select id="model-dropdown" onchange="changeModel()" style="width: 100%; padding: 8px; border: 1px solid #e2e8f0; border-radius: 4px;">
+                            <option value="">Loading models...</option>
+                        </select>
+                    </div>
+
+                    <p style="font-size: 0.8em; color: #6b7280; margin-top: 10px;">
+                        Current: <span id="current-provider-model">Loading...</span>
+                    </p>
+                </div>
+
+                <div style="margin-top: 30px;">
+                    <h3>Session</h3>
+                    <button onclick="saveConversation()" style="margin-bottom: 8px; background: #10b981;">💾 Save Conversation</button>
+                    <button onclick="clearSession()">Clear Conversation</button>
+                    <p style="font-size: 0.9em; color: #6b7280; margin-top: 10px;">
+                        Session ID: <span id="session-id"></span>
+                    </p>
+                    <p style="font-size: 0.9em; margin-top: 8px;">
+                        <span id="auto-save-indicator" style="color: #6b7280;">⚪ Auto-save idle</span>
+                    </p>
+                    <div style="margin-top: 12px; padding: 8px; background: #f9fafb; border-radius: 4px;">
+                        <p style="font-size: 0.85em; margin: 0; margin-bottom: 6px; font-weight: 500;">View Saved:</p>
+                        <a id="logs-link" href="#" target="_blank" style="font-size: 0.85em; display: block; margin-bottom: 4px; color: #3b82f6;">📁 Auto-saved Logs</a>
+                        <a id="saved-link" href="#" target="_blank" style="font-size: 0.85em; display: block; color: #3b82f6;">⭐ Saved Conversations</a>
+                    </div>
+                </div>
+
+                <div style="margin-top: 30px;" class="config-section">
+                    <h3>Tool Configuration</h3>
+                    <div class="config-options">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="enableVariables" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Enable Variables</span>
+                        </label>
+                        <label class="toggle-switch" style="margin-top: 10px;">
+                            <input type="checkbox" id="enableImages" checked>
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Enable Images</span>
+                        </label>
+                        <button id="restartToolshed" class="restart-button" onclick="restartToolshed()">
+                            🔄 RESTART TOOLSHED
+                        </button>
+                        <p class="config-warning">
+                            ⚠️ Restarting toolshed affects ALL connected clients and clears all sessions
+                        </p>
+                        <div id="configStatus" class="config-status"></div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 30px;" class="config-section">
+                    <h3>System Prompt</h3>
+                    <div class="config-options">
+                        <button onclick="toggleSystemPromptEditor()" class="restart-button" style="background: #3b82f6; margin-bottom: 10px;">
+                            ✏️ Edit System Prompt
+                        </button>
+                        <div id="systemPromptEditor" style="display: none;">
+                            <textarea
+                                id="systemPromptText"
+                                style="width: 100%; height: 300px; padding: 8px; border: 1px solid #e2e8f0; border-radius: 4px; font-family: monospace; font-size: 0.85em;"
+                                placeholder="Loading system prompt..."></textarea>
+                            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                <button onclick="saveSystemPrompt()" style="flex: 1; background: #10b981;">💾 Save</button>
+                                <button onclick="resetSystemPrompt()" style="flex: 1; background: #f59e0b;">🔄 Reset to Default</button>
+                            </div>
+                            <p style="font-size: 0.8em; color: #6b7280; margin-top: 8px;">
+                                ⚠️ Changes apply to new sessions only. Existing sessions keep their original prompt.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 30px;" id="chain-of-thought-section">
+                    <h3>Chain of Thought <span id="reasoning-count" style="font-size: 0.8em; color: #6b7280;">(0)</span></h3>
+                    <div id="reasoning-chain" style="max-height: 200px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px; background: #f9fafb;">
+                        <p style="font-size: 0.9em; color: #6b7280;">AI reasoning will appear here...</p>
+                    </div>
+                    <p style="font-size: 0.8em; color: #6b7280; margin-top: 10px;">
+                        🧠 Shows the AI's internal reasoning across all iterations
+                    </p>
+                </div>
+
+                <div style="margin-top: 30px;" id="variables-section">
+                    <h3>Variables <span id="variable-count" style="font-size: 0.8em; color: #6b7280;">(0)</span></h3>
+                    <div id="variables-list" style="max-height: 200px; overflow-y: auto;">
+                        <p style="font-size: 0.9em; color: #6b7280;">No variables stored yet</p>
+                    </div>
+                    <p style="font-size: 0.8em; color: #6b7280; margin-top: 10px;">
+                        💡 Tools can store variables (like $processed_image) that can be referenced in future tool calls
+                    </p>
+                </div>
+            </div>
+
+            <div class="chat-area">
+                <div class="messages" id="messages">
+                    <div class="message assistant-message">
+                        <strong>Assistant:</strong> Hello! I can help you analyze images using computer vision tools and execute Python code. Upload some images and ask me questions about them!
+                    </div>
+                </div>
+
+                <div class="loading" id="loading">
+                    <span>🤖 AI is thinking and using tools...</span>
+                    <button onclick="stopProcessing()" id="stop-button" class="stop-button">⏹️ Stop</button>
+                </div>
+
+                <div class="input-area">
+                    <div id="status"></div>
+
+                    <div class="file-input">
+                        <input type="file" id="image-upload" multiple accept="image/*" onchange="handleImageUpload()">
+                        <div id="uploaded-images" class="uploaded-images"></div>
+                    </div>
+
+                    <div class="input-group">
+                        <input type="text" id="message-input" placeholder="Ask a question about your images..." onkeypress="handleKeyPress(event)">
+                        <button onclick="sendMessage()" id="send-button">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for enlarged images -->
+    <div id="imageModal" class="modal" onclick="closeModal()">
+        <span class="close">&times;</span>
+        <div class="modal-content">
+            <img id="modalImage" src="">
+        </div>
+    </div>
+
+    <script src="/static/llm_app.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,24 @@
+{
+    "calculator": {
+        "num_actors": 1,
+        "resources": {
+          "num_gpus": 0
+        },
+        "timeout": 600,
+        "args": {
+          "no_output_image": false,
+          "no_output_vars": false
+        }
+    },
+    "greeting": {
+        "num_actors": 1,
+        "resources": {
+            "num_gpus": 0
+        },
+        "timeout": 600,
+        "args": {
+            "no_output_image": false,
+            "no_output_vars": false
+        }
+    }
+}

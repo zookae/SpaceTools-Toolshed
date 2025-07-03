@@ -1,0 +1,28 @@
+# Requirements for GraspGen tool environment
+# Install in a dedicated conda environment with matching Python and Ray versions
+#
+# This tool requires the GraspGen package to be installed separately.
+#
+# Setup:
+#   source scripts/setup_tool_env.sh tool_graspgen graspgen
+#
+# Or manually:
+#   conda create -n tool_graspgen python==3.10 -y
+#   conda activate tool_graspgen
+#   pip install ray==2.47.1
+#   pip install -e .
+#   pip install -r requirements/tool-graspgen.txt
+#
+# Then install GraspGen:
+#   git clone <your-graspgen-repo>
+#   cd GraspGen
+#   pip install -e .
+#   cd pointnet2_ops && pip install --no-build-isolation .
+#
+# Download models:
+#   cd toolshed/data
+#   git clone https://huggingface.co/adithyamurali/GraspGenModels
+
+# No additional pip dependencies - GraspGen brings its own
+# The tool just needs toolshed base + GraspGen installed
+

@@ -1,0 +1,21 @@
+# Requirements for Bounding Box tool environment
+# Install in a dedicated conda environment with matching Python and Ray versions
+#
+# Setup:
+#   source scripts/setup_tool_env.sh tool_bbox bbox
+#
+# Or manually:
+#   conda create -n tool_bbox python==3.10 -y
+#   conda activate tool_bbox
+#   pip install ray==2.47.1
+#   pip install -e .
+#   pip install -r requirements/tool-bbox.txt
+
+# 3D processing
+open3d
+
+# Vision dependencies
+opencv-python
+
+
+

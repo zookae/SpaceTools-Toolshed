@@ -1,0 +1,91 @@
+{
+    "vlm": {
+      "num_actors": 1,
+      "resources": {
+        "num_gpus": 1
+      },
+      "conda_env": "tool_vlm",
+      "timeout": 600,
+      "args": {
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    },
+    "vision_ops": {
+      "num_actors": 1,
+      "resources": {
+        "num_gpus": 0
+      },
+      "conda_env": "tool_vlm",
+      "timeout": 600,
+      "args": {
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    },
+    "sam2": {
+      "num_actors": 1,
+      "resources": {
+        "num_gpus": 0.3
+      },
+      "conda_env": "tool_sam2",
+      "timeout": 600,
+      "args": {
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    },
+    "depth_estimator": {
+      "num_actors": 1,
+      "resources": {
+        "num_gpus": 0.3
+      },
+      "conda_env": "tool_depth",
+      "timeout": 600,
+      "args": {
+        "checkpoint_path": "checkpoints/depth_pro.pt",
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    },
+    "code_executor": {
+      "num_actors": 1,
+      "resources": {
+        "num_cpus": 1.0,
+        "num_gpus": 0
+      },
+      "conda_env": "verlshed",
+      "timeout": 600,
+      "args": {
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    },
+    "bounding_box": {
+      "num_actors": 1,
+      "resources": {
+        "num_gpus": 0
+      },
+      "conda_env": "tool_bbox",
+      "timeout": 600,
+      "args": {
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    },
+    "grasp_generator": {
+      "num_actors": 1,
+      "resources": {
+        "num_gpus": 0.2
+      },
+      "conda_env": "tool_graspgen",
+      "timeout": 600,
+      "args": {
+        "gripper_config": "toolshed/tools/graspgen_franka_panda.yml",
+        "no_output_image": false,
+        "no_output_vars": false
+      }
+    }
+  }
+  
+  

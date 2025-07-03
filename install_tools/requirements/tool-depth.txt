@@ -1,0 +1,39 @@
+# Requirements for Depth Estimator tool environment
+# Install in a dedicated conda environment with matching Python and Ray versions
+#
+# IMPORTANT: This tool requires numpy<2.0.0 which conflicts with the base toolshed
+# environment. It MUST be installed in a separate conda environment.
+#
+# Setup:
+#   source scripts/setup_tool_env.sh tool_depth depth
+#
+# Or manually:
+#   conda create -n tool_depth python==3.10 -y
+#   conda activate tool_depth
+#   pip install ray==2.47.1
+#   pip install -e .
+#   pip install -r requirements/tool-depth.txt
+#   pip install git+https://github.com/apple/ml-depth-pro.git
+#
+# Then download checkpoints:
+#   mkdir -p checkpoints
+#   wget https://ml-site.cdn-apple.com/models/depth-pro/depth_pro.pt -P checkpoints
+
+# PyTorch
+torch>=2.0.0
+torchvision>=0.15.0
+
+# NOTE: numpy<2.0.0 is required by ml-depth-pro, conflicts with base toolshed!
+# numpy<2.0.0
+
+# Vision and visualization
+pillow>=9.0.0
+matplotlib>=3.5.0
+pillow_heif>=0.13.0
+
+# Model dependencies
+timm>=0.9.0
+
+# ml-depth-pro must be installed separately from GitHub:
+# pip install git+https://github.com/apple/ml-depth-pro.git
+git+https://github.com/apple/ml-depth-pro.git

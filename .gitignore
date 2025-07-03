@@ -1,0 +1,3 @@
+toolshed.egg-info/
+*__pycache__*
+outputs/

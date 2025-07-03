@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toolshed"
+version = "0.1.0"
+description = "A distributed toolkit for AI agents"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Toolshed Team"}
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+# Core runtime dependencies only - tools have their own requirements files
+dependencies = [
+    "ray[default]==2.47.1",
+    "numpy>=2.0.0",
+    "docstring_parser>=0.15",
+    "aiohttp>=3.8.0",
+    "aiohttp-cors>=0.7.0",
+    "Pillow>=11.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "python-multipart>=0.0.6",
+    "openai>=1.0.0",
+    "botocore>=1.30.0",
+    "pyyaml>=6.0",
+    "anthropic",
+    "matplotlib",
+    "scipy>=1.0.0",
+    "requests>=2.25.0",
+    "click==8.2.1",
+    "compressed-tensors==0.10.2",
+    "uvloop==0.21.0",
+    "weave==0.51.56",
+    "gql==3.5.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[project.scripts]
+toolshed-launch = "toolshed.cli:main"
+toolshed-export-schemas = "toolshed.cli:export_schemas"
+
+[project.urls]
+Homepage = "https://github.com/toolshed/toolshed"
+Documentation = "https://github.com/toolshed/toolshed#readme"
+Repository = "https://github.com/toolshed/toolshed"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["toolshed*"]
+
+[tool.setuptools.package-data]
+toolshed = [
+    "dashboard/static/*.html",
+    "dashboard/static/*.js",
+    "dashboard/static/*.css",
+    "resources/**/*",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

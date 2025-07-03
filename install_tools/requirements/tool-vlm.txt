@@ -1,0 +1,33 @@
+# Requirements for VLM (Vision-Language Model) tool environment
+# Install in a dedicated conda environment with matching Python and Ray versions
+#
+# Setup:
+#   source scripts/setup_tool_env.sh tool_vlm vlm
+#
+# Or manually:
+#   conda create -n tool_vlm python==3.10 -y
+#   conda activate tool_vlm
+#   pip install ray==2.47.1
+#   pip install -e .
+#   pip install -r requirements/tool-vlm.txt
+
+# PyTorch (install first, may need CUDA-specific version)
+torch
+torchvision
+
+# Transformers and model loading
+transformers==4.53.2
+accelerate
+bitsandbytes>=0.41.0  # For 8-bit quantization support
+numpy>2.0.0
+
+# Vision dependencies
+pillow==12.0.0
+opencv-python
+
+# Optional: vLLM for faster inference (requires compatible CUDA)
+# vllm>=0.6.0
+
+# TensorFlow (optional, only if needed for specific models)
+tensorflow
+einops

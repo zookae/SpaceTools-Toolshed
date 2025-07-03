@@ -1,0 +1,29 @@
+# Requirements for RoboRefer tool environment
+# Install in a dedicated conda environment with matching Python and Ray versions
+#
+# Setup:
+#   source scripts/setup_tool_env.sh tool_roborefer roborefer
+#
+# Or manually:
+#   conda create -n tool_roborefer python==3.10 -y
+#   conda activate tool_roborefer
+#   pip install ray==2.47.1
+#   pip install -e .
+#   pip install -r requirements/tool-roborefer.txt
+
+# PyTorch
+torch
+torchvision
+
+# Model loading
+transformers>=4.30.0
+accelerate
+
+numpy>2.0.0
+pillow==12.0.0
+
+# LLaVA (may require separate installation depending on version)
+# llava
+
+
+
