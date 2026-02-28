@@ -40,9 +40,12 @@ def parse_args():
     p.add_argument(
         "--model-path",
         type=Path,
-        default=Path("/lustre/fsw/portfolios/nvr/users/siyic/projects/RoboRefer/models/RoboRefer-8B-SFT"),
+        default=Path("checkpoints/RoboRefer-8B-SFT"),
         help="Path to RoboRefer checkpoint directory",
     )
+    p.add_argument("--config", type=str, default=None,
+                   help="Path to JSON config file for tool configurations. "
+                        "If provided, overrides the inline tool configs (including conda_env names).")
     return p.parse_args()
 
 
@@ -65,6 +68,15 @@ def main() -> None:
         }
     }
 
+    # Override with JSON config if provided
+    if args.config is not None:
+        import json
+        config_path = Path(args.config)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
+
     print("Starting toolkit with RoboRefer …")
     handle = start_toolkit(tool_configs)
 
@@ -73,7 +85,7 @@ def main() -> None:
 
         # Use provided image or default sample
         if args.image is None:
-            img_path = Path(__file__).parent / "media" / "kitchen.png"
+            img_path = Path(__file__).parent / ".." / "media" / "kitchen.png"
         else:
             img_path = args.image
         if not img_path.exists():

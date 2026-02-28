@@ -26,11 +26,13 @@ NC='\033[0m'
 
 echo -e "${YELLOW}Installing Depth Estimator tool dependencies...${NC}"
 
-# Prompt for checkpoint directory at the start
+# Prompt for checkpoint directory at the start (can be pre-set via env var for non-interactive use)
 echo ""
 echo -e "${YELLOW}Depth Pro requires a model checkpoint (~370MB).${NC}"
-echo -n "Enter directory to save checkpoint [default: $TOOLSHED_ROOT/checkpoints]: "
-read -r CHECKPOINT_DIR
+if [ -z "$CHECKPOINT_DIR" ]; then
+    echo -n "Enter directory to save checkpoint [default: $TOOLSHED_ROOT/checkpoints]: "
+    read -r CHECKPOINT_DIR
+fi
 
 if [ -z "$CHECKPOINT_DIR" ]; then
     CHECKPOINT_DIR="$TOOLSHED_ROOT/checkpoints"
@@ -60,6 +62,13 @@ else
     echo -e "${YELLOW}Downloading depth_pro.pt to $CHECKPOINT_DIR...${NC}"
     wget -q --show-progress https://ml-site.cdn-apple.com/models/depth-pro/depth_pro.pt -O "$CHECKPOINT_FILE"
 fi
+
+# Force numpy 2.x to match the base toolshed environment.
+# ml-depth-pro pins numpy<2 but works fine with numpy 2.x in practice.
+# Mismatched numpy major versions across Ray actors cause serialisation
+# failures (e.g. "No module named 'numpy._core.numeric'").
+echo -e "${YELLOW}Upgrading numpy to match base environment...${NC}"
+pip install "numpy>=2.0" --force-reinstall --no-deps
 
 echo ""
 echo -e "${GREEN}=========================================="

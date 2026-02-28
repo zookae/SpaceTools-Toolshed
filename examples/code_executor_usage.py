@@ -15,17 +15,38 @@ This demonstrates the exact API pattern requested by the user:
     result, stdout, stderr = executor.eval(code_block)
 """
 
+import argparse
+import json
+import sys
+from pathlib import Path
+
 from toolshed import start_toolkit, CodeExecutor, shutdown_toolkit
 
 
 def main():
     """Demonstrate the CodeExecutor usage pattern."""
-    
+
+    parser = argparse.ArgumentParser(description="CodeExecutor usage example")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to JSON config file for tool configurations. "
+                             "If provided, overrides the inline tool configs (including conda_env names).")
+    args = parser.parse_args()
+
     # Setup the toolkit first (this would typically be done once per cluster)
     tool_configs = {
-        "greeting": {"num_actors": 2, "resources": {"num_cpus": 0, "num_gpus": 0}, "conda_env": "verlshed"},
-        "calculator": {"num_actors": 2, "resources": {"num_cpus": 0, "num_gpus": 0}, "conda_env": "verlshed"}
+        "greeting": {"num_actors": 2, "resources": {"num_cpus": 0, "num_gpus": 0}},
+        "calculator": {"num_actors": 2, "resources": {"num_cpus": 0, "num_gpus": 0}}
     }
+
+    # Override with JSON config if provided
+    if args.config is not None:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"Error: Config file not found at {config_path}")
+            sys.exit(1)
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
+
     actor = start_toolkit(tool_configs)
     
     try:

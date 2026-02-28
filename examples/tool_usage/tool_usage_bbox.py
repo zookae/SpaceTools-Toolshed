@@ -158,6 +158,9 @@ def main():
     parser.add_argument("--image", type=str, default=None, help="Path to input image (default: examples/media/kitchen.png)")
     parser.add_argument("--out", type=str, default="bbox", help="Output folder name or absolute path (default: bbox, which becomes outputs/bbox)")
     parser.add_argument("--query", type=str, default="butter", help="Object to detect with VLM (default: butter)")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to JSON config file for tool configurations. "
+                             "If provided, overrides the inline tool configs (including conda_env names).")
     args = parser.parse_args()
     
     # Determine output directory
@@ -196,6 +199,16 @@ def main():
         }
     }
     
+    # Override with JSON config if provided
+    if args.config is not None:
+        import json
+        config_path = args.config
+        if not os.path.exists(config_path):
+            print(f"Error: Config file not found at {config_path}")
+            sys.exit(1)
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
+
     print("Starting toolshed with all tools...")
     handle = start_toolkit(tool_configs, detached=False)
     toolkit = get_toolkit()
@@ -205,7 +218,7 @@ def main():
         if args.image:
             img_path = args.image
         else:
-            img_path = os.path.join(ROOT_DIR, "examples", "media", "kitchen.png")
+            img_path = os.path.join(ROOT_DIR, "media", "kitchen.png")
         image = Image.open(img_path)
         print(f"Loaded image: {image.size}")
         

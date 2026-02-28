@@ -41,7 +41,6 @@ dependencies = [
     "scipy>=1.0.0",
     "requests>=2.25.0",
     "click==8.2.1",
-    "compressed-tensors==0.10.2",
     "uvloop==0.21.0",
     "weave==0.51.56",
     "gql==3.5.3",

@@ -120,6 +120,17 @@ def main(args) -> None:
         }
     }
 
+    # Override with JSON config if provided
+    if args.config is not None:
+        import json
+        config_path = Path(args.config)
+        if not config_path.exists():
+            logger.error(f"Config file not found: {config_path}")
+            sys.exit(1)
+        logger.info(f"Loading tool configs from {config_path}")
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
+
     # Start toolkit
     logger.info("="*60)
     logger.info("Starting toolkit with all tools...")
@@ -256,8 +267,9 @@ if __name__ == "__main__":
     p.add_argument("--image", type=Path, help="Path to input image (default: examples/media/example_image.jpg)")
     p.add_argument("--object", type=str, default="alarm clock", help="Object name to detect and grasp (default: 'alarm clock')")
     p.add_argument("--output-dir", type=Path, default=Path("outputs/grasp_demo"), help="Directory for output files (default: outputs/grasp_demo)")
-    p.add_argument("--roborefer-model", type=Path, default=Path("/lustre/fsw/portfolios/nvr/users/siyic/projects/RoboRefer/models/RoboRefer-8B-SFT"), help="Path to RoboRefer checkpoint directory")
-    p.add_argument("--gripper-config", type=Path, default=ROOT_DIR / "graspgen_franka_panda.yml", help="Path to gripper config file")
-    p.add_argument("--depth-checkpoint", type=Path, default=Path("/lustre/fsw/portfolios/nvr/users/vblukis/checkpoints/depth_pro.pt"), help="Path to depth estimator checkpoint")
+    p.add_argument("--roborefer-model", type=Path, default=ROOT_DIR / "checkpoints" / "RoboRefer-8B-SFT", help="Path to RoboRefer checkpoint directory")
+    p.add_argument("--gripper-config", type=Path, default=ROOT_DIR / "toolshed" / "tools" / "graspgen_franka_panda.yml", help="Path to gripper config file")
+    p.add_argument("--depth-checkpoint", type=Path, default=ROOT_DIR / "checkpoints" / "depth_pro.pt", help="Path to depth estimator checkpoint")
+    p.add_argument("--config", type=str, default=None, help="Path to JSON config file for tool configurations. If provided, overrides the inline tool configs (including conda_env names).")
     args = p.parse_args()
     main(args)

@@ -86,6 +86,7 @@ Example usage:
   toolshed-launch --config tools.json --detached
   toolshed-launch --config tools.json --placement-group-size 8  # Constrain to one 8-GPU node
   toolshed-launch --config tools.json --placement-group-size auto  # Auto-calculate from config
+  toolshed-launch --config tools.json --ray-address auto  # Connect to existing Ray cluster
         """
     )
     
@@ -118,8 +119,9 @@ Example usage:
     parser.add_argument(
         '--ray-address',
         type=str,
-        default='auto',
-        help='Ray cluster address (default: "auto" to connect to existing cluster)'
+        default=None,
+        help='Ray cluster address. Use "auto" to connect to an existing cluster. '
+             'If not specified, a local Ray instance is started automatically (matching Python API behavior).'
     )
     
     parser.add_argument(
@@ -152,9 +154,16 @@ Example usage:
         tool_configs = load_config(args.config)
         print(f"Found {len(tool_configs)} tool(s) to launch: {list(tool_configs.keys())}")
         
-        # Connect to Ray cluster
-        print(f"Connecting to Ray cluster at '{args.ray_address}'...")
-        ray.init(address=args.ray_address)
+        # Initialize Ray — match Python API behavior:
+        # if --ray-address is given, connect to that cluster;
+        # otherwise auto-start a local Ray instance.
+        if not ray.is_initialized():
+            if args.ray_address:
+                print(f"Connecting to Ray cluster at '{args.ray_address}'...")
+                ray.init(address=args.ray_address, log_to_driver=True)
+            else:
+                print("Starting local Ray instance...")
+                ray.init(log_to_driver=True)
         print("Connected to Ray successfully")
         
         # Import here to ensure Ray is initialized first

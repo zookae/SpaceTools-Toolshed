@@ -227,7 +227,7 @@ def get_default_toolkit_config(enable_variables=True, enable_images=True, enable
         'code_executor': {
             'num_actors': 8,
             'resources': {'num_cpus': 1.0, 'num_gpus': 0},
-            'conda_env': 'verlshed',  # Using the main toolshed environment
+            'conda_env': 'toolshed',  # Using the main toolshed environment
             'timeout': 600,
             'args': {
                 'no_output_image': not enable_images,
@@ -269,7 +269,7 @@ def get_default_toolkit_config(enable_variables=True, enable_images=True, enable
         "mock_robot": {
             "num_actors": 8,
             "resources": {"num_cpus": 0.0, "num_gpus": 0},
-            "conda_env": "verlshed",
+            "conda_env": "toolshed",
             "timeout": 600,
             "args": {
                 "no_output_image": not enable_images,

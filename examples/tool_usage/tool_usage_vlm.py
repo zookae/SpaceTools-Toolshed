@@ -20,6 +20,7 @@ This script:
 
 from pathlib import Path
 import os
+import sys
 
 import ray
 from PIL import Image
@@ -31,6 +32,15 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 def main() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="VLM tool usage example")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to JSON config file for tool configurations. "
+                             "If provided, overrides the inline tool configs (including conda_env names).")
+    args = parser.parse_args()
+
     # Configure the toolkit – one GPU-backed VLM actor is enough for a demo.
     tool_configs = {
         "vlm": {
@@ -40,6 +50,15 @@ def main() -> None:
         }
     }
 
+    # Override with JSON config if provided
+    if args.config is not None:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"Error: Config file not found at {config_path}")
+            sys.exit(1)
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
+
     print("Starting toolkit with VLM …")
     handle = start_toolkit(tool_configs)
 
@@ -47,7 +66,7 @@ def main() -> None:
         toolkit = get_toolkit()
 
         # Load the sample image bundled with the repository.
-        img_path = Path(__file__).parent / "media" / "kitchen.png"
+        img_path = Path(__file__).parent / ".." / "media" / "kitchen.png"
         if not img_path.exists():
             raise FileNotFoundError(f"Example image not found: {img_path}")
 

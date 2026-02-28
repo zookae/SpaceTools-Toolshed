@@ -22,11 +22,13 @@ NC='\033[0m'
 
 echo -e "${YELLOW}Installing RoboRefer tool dependencies...${NC}"
 
-# Prompt for checkpoint directory at the start
+# Prompt for checkpoint directory at the start (can be pre-set via env var for non-interactive use)
 echo ""
 echo -e "${YELLOW}RoboRefer requires a model checkpoint (~16GB).${NC}"
-echo -n "Enter directory to save checkpoint [default: $TOOLSHED_ROOT/checkpoints]: "
-read -r CHECKPOINT_DIR
+if [ -z "$CHECKPOINT_DIR" ]; then
+    echo -n "Enter directory to save checkpoint [default: $TOOLSHED_ROOT/checkpoints]: "
+    read -r CHECKPOINT_DIR
+fi
 
 if [ -z "$CHECKPOINT_DIR" ]; then
     CHECKPOINT_DIR="$TOOLSHED_ROOT/checkpoints"
@@ -55,14 +57,28 @@ if [ -d "$CHECKPOINT_SUBDIR" ] && [ -f "$CHECKPOINT_SUBDIR/config.json" ]; then
 else
     echo -e "${YELLOW}Downloading RoboRefer-8B-SFT from HuggingFace to $CHECKPOINT_DIR...${NC}"
     
-    # Check if huggingface-cli is available
-    if ! command -v huggingface-cli &> /dev/null; then
-        echo -e "${YELLOW}huggingface-cli not found. Installing huggingface-hub...${NC}"
-        pip install huggingface-hub
+    # Determine which HuggingFace CLI command is available
+    # Newer huggingface_hub (>=1.0) uses 'hf', older versions use 'huggingface-cli'
+    if command -v huggingface-cli &> /dev/null; then
+        HF_CLI="huggingface-cli"
+    elif command -v hf &> /dev/null; then
+        HF_CLI="hf"
+    else
+        echo -e "${YELLOW}No HuggingFace CLI found. Installing huggingface-hub[cli]...${NC}"
+        pip install "huggingface-hub[cli]"
+        if command -v huggingface-cli &> /dev/null; then
+            HF_CLI="huggingface-cli"
+        elif command -v hf &> /dev/null; then
+            HF_CLI="hf"
+        else
+            echo -e "${RED}Error: Could not find HuggingFace CLI after installation${NC}"
+            exit 1
+        fi
     fi
+    echo -e "${GREEN}Using HuggingFace CLI: $HF_CLI${NC}"
     
     # Download the model
-    huggingface-cli download Zhoues/RoboRefer-8B-SFT --local-dir "$CHECKPOINT_SUBDIR" --local-dir-use-symlinks False
+    $HF_CLI download Zhoues/RoboRefer-8B-SFT --local-dir "$CHECKPOINT_SUBDIR"
     if [ $? -ne 0 ]; then
         echo -e "${RED}Error: Failed to download RoboRefer checkpoint${NC}"
         exit 1
@@ -77,12 +93,25 @@ if [ -d "$ROBOREFER_DIR" ]; then
 else
     echo -e "${YELLOW}Cloning RoboRefer repository...${NC}"
     cd "$TOOLSHED_ROOT"
-    git clone git@github.com:nvalts/RoboRefer.git
+    git clone https://github.com/Zhoues/RoboRefer.git
     if [ $? -ne 0 ]; then
         echo -e "${RED}Error: Failed to clone RoboRefer repository${NC}"
         exit 1
     fi
 fi
+
+# Patch RoboRefer pyproject.toml: comment out lighteval dependency
+# (it hangs during installation and is not needed for inference)
+cd "$ROBOREFER_DIR"
+if grep -q '^    "lighteval @' pyproject.toml 2>/dev/null; then
+    echo -e "${YELLOW}Patching RoboRefer pyproject.toml: disabling lighteval dependency (hangs during install)...${NC}"
+    sed -i 's|^    "lighteval @ git+https://github.com/huggingface/lighteval.git@[^"]*",|    #"lighteval (disabled - hangs during install)",|' pyproject.toml
+fi
+
+# Install cuda-nvcc so PyTorch can resolve CUDA_HOME via `which nvcc`
+# (needed by deepspeed import check at runtime)
+echo -e "${YELLOW}Installing cuda-nvcc (for CUDA_HOME resolution)...${NC}"
+conda install -c nvidia cuda-nvcc=12.4 -y
 
 # Run RoboRefer setup script
 echo -e "${YELLOW}Running RoboRefer env_setup.sh...${NC}"

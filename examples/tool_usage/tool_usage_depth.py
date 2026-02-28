@@ -66,6 +66,15 @@ def visualize_point_cloud(point_cloud, sample_rate=10):
 
 def main():
     """Main example function."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Depth estimation tool usage example")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to JSON config file for tool configurations. "
+                             "If provided, overrides the inline tool configs (including conda_env names).")
+    args = parser.parse_args()
+
     # Configure the depth estimator tool
     # You may need to adjust the checkpoint path based on your setup
     tool_configs = {
@@ -79,6 +88,15 @@ def main():
             }
         }
     }
+
+    # Override with JSON config if provided
+    if args.config is not None:
+        config_path = args.config
+        if not os.path.exists(config_path):
+            print(f"Error: Config file not found at {config_path}")
+            sys.exit(1)
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
     
     print("Starting toolshed with depth estimator...")
     try:
@@ -91,7 +109,7 @@ def main():
         
         # Load an example image
         # You can replace this with your own image path
-        image_path = os.path.join(os.path.dirname(__file__), "media", "kitchen.png")
+        image_path = os.path.join(os.path.dirname(__file__), "..", "media", "kitchen.png")
         
         image = Image.open(image_path)
         print(f"Loaded image: {image.size}")

@@ -83,6 +83,7 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401 – script entry
     parser = argparse.ArgumentParser(description="Visual reasoning scaling demo – multi-GPU pipeline")
     parser.add_argument("--image", type=str, default=str(DEFAULT_IMAGE), help="Path to input image")
     parser.add_argument("--max_objects", type=int, default=10, help="Maximum number of objects to process")
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config file for tool configurations. If provided, overrides the inline tool configs (including conda_env names).")
     parser.add_argument("--show", action="store_true", help="Display the annotated image interactively")
     args = parser.parse_args(argv)
 
@@ -118,6 +119,15 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401 – script entry
             },
         },
     }
+
+    # Override with JSON config if provided
+    if args.config is not None:
+        import json
+        config_path = Path(args.config)
+        if not config_path.exists():
+            parser.error(f"Config file not found: {config_path}")
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
 
     print("Starting toolshed cluster … (initial model downloads may take a while)")
     handle = start_toolkit(tool_configs, detached=False, dashboard=True, dashboard_port=7001)

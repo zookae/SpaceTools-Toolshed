@@ -55,6 +55,15 @@ def overlay_mask(img: Image.Image, mask: np.ndarray, colour: Tuple[int, int, int
 
 def main():
     """Run the example."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="SAM2 segmentation tool usage example")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to JSON config file for tool configurations. "
+                             "If provided, overrides the inline tool configs (including conda_env names).")
+    args = parser.parse_args()
+
     # Configure the SAM-2 tool – request a GPU if available for speed.
     tool_configs = {
         "sam2": {
@@ -65,13 +74,22 @@ def main():
         }
     }
 
+    # Override with JSON config if provided
+    if args.config is not None:
+        config_path = args.config
+        if not os.path.exists(config_path):
+            print(f"Error: Config file not found at {config_path}")
+            sys.exit(1)
+        with open(config_path, "r") as f:
+            tool_configs = json.load(f)
+
     print("Starting toolshed (this may take a minute on first run)…")
     handle = start_toolkit(tool_configs, detached=False)
     toolkit = get_toolkit()
 
     try:
         # Load an example image (a 512×512 kitchen photo shipped with the repo)
-        img_path = os.path.join(os.path.dirname(__file__), "media", "kitchen.png")
+        img_path = os.path.join(os.path.dirname(__file__), "..", "media", "kitchen.png")
         image = Image.open(img_path)
         w, h = image.size
 

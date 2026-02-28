@@ -31,7 +31,7 @@ from toolshed.tool_result import ToolResult
 
 def load_kitchen_image():
     """Load the sample kitchen image bundled with the repository."""
-    img_path = Path(__file__).parent / "media" / "kitchen.png"
+    img_path = Path(__file__).parent / ".." / "media" / "kitchen.png"
     if not img_path.exists():
         raise FileNotFoundError(f"Example image not found: {img_path}")
     

@@ -59,6 +59,10 @@ if conda env list | grep -q "^${ENV_NAME} "; then
     echo -e "${YELLOW}Warning: Environment '$ENV_NAME' already exists.${NC}"
     echo -n "Continue with existing (c), recreate (r), or abort (a)? [c/r/a] "
     read -r response
+    # Default to continue when response is empty (e.g., non-interactive execution)
+    if [ -z "$response" ]; then
+        response="c"
+    fi
     if [ "$response" = "r" ] || [ "$response" = "R" ]; then
         echo "Removing existing environment..."
         conda env remove -n "$ENV_NAME" -y

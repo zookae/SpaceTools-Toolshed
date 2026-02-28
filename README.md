@@ -1,19 +1,35 @@
-# SpaceTools Toolshed: A Distributed Toolkit with Vision Tools for Visual Agents
+# SpaceTools: A Distributed Toolkit with Vision Tools for Visual Agents
 
 ![toolshed](examples/media/toolshed_robot.png)
 
+SpaceTools provides **Toolshed**, a distributed framework for hosting and replicating tools such as neural network models, VLMs, VLAs in a Ray cluster, and making them available for inference or reinforcement learning workflows. SpaceTools also ships a collection of ready-to-use vision and spatial reasoning tools built on top of Toolshed.
 
-Toolshed is a distributed toolkit for hosting and replicating tools such as neural network models, VLMs, VLAs in a Ray cluster, and making them available for inference or reinforcement learning workflows.
+## Table of Contents
 
-The key features are:
+- [Prerequisites](#prerequisites)
+- [Environment \& Installation](#environment--installation)
+- [Quick Start: Agent Web UI](#quick-start-agent-web-ui)
+- [Launching Toolshed in Python](#launching-toolshed-in-python)
+- [Toolshed Dashboard](#toolshed-dashboard)
+- [🤖 Agentic Workflow](#-agentic-workflow)
+  - [Simple Agent Examples](#simple-agent-examples)
+  - [Agent Configuration](#agent-configuration)
+- [Direct Tool Usage in Python](#direct-tool-usage-in-python)
+- [Code Execution with Tool Access](#code-execution-with-tool-access)
+- [Multinode Deployment](#multinode-deployment)
+- [Toolshed CLI](#toolshed-cli)
+- [Creating New Tools](#creating-new-tools)
+- [Examples](#examples)
+
+**Key features of Toolshed:**
 - **Ray-based Architecture**: Scaling across multiple heterogeneous machines
-- **Load Balancing**: Host multiple tool instance with automatic request routing
+- **Load Balancing**: Host multiple tool instances with automatic request routing
 - **Queue Management**: Automatic queuing when all actors are busy
-- **Environment Isolation**: Each tool has a dedicated python environment with its own dependencies
-- **Schema Generation**: Converting tool docstrings to json schemas for interfacing with LLM frameworks
-- **Code Execution Interface**: A pythonic interface to the full toolkit, allowing the tools to be used in generated code.
+- **Environment Isolation**: Each tool has a dedicated Python environment with its own dependencies
+- **Schema Generation**: Converting tool docstrings to JSON schemas for interfacing with LLM frameworks
+- **Code Execution Interface**: A Pythonic interface to the full toolkit, allowing tools to be used in generated code
 
-Included tools, with ability to add your own:
+**Included tools** (with the ability to add your own):
 
 **Core Tools:**
 - **Code Executor**: Execute Python code with access to the toolkit
@@ -33,6 +49,22 @@ Included tools, with ability to add your own:
 **Robot Integration Tools:**
 - **Robot**: Control a robot system via HTTP API
 
+## Prerequisites
+
+Before installing SpaceTools, ensure you have the following:
+
+| Requirement | Details |
+|-------------|---------|
+| **OS** | Linux (tested on Ubuntu 20.04/22.04) |
+| **Python** | 3.10 |
+| **Conda** | Miniconda or Anaconda for environment management |
+| **CUDA** | 11.8+ (required for GPU-accelerated vision tools) |
+| **GPU** | NVIDIA GPU with >=40 GB VRAM recommended for vision tools |
+| **RAM** | ≥32 GB recommended |
+| **Disk** | ~30 GB free for model checkpoints (downloaded on first launch) |
+
+> 💡 CPU-only tools (calculator, greeting, code executor, vision ops) work without a GPU. You can try the minimal examples without any GPU.
+
 ## Environment & Installation
 
 ### Overview
@@ -46,7 +78,7 @@ Toolshed uses **separate conda environments** for different vision tools because
 ```bash
 conda create -n toolshed python==3.10 -y
 conda activate toolshed
-cd toolshed
+cd SpaceTools
 pip install -e .
 ```
 
@@ -188,7 +220,7 @@ The `start_toolkit` function supports the following additional arguments:
 - **`placement_group`**: Optional Ray placement group for resource management
 - **`placement_group_size`**: Size for automatic placement group creation (int or `"auto"`). Pass "8" to ensure that all tools occupy one node with 8 gpus (default: `"auto"`)
 
-> **⚠️ Important**: It is recommended to use deatched=False, but maintain a reference to the actor handle returned by `start_toolkit`. Once the handle gets garbage collected, the entire toolkit including all tools will get shut down and cleaned up nicely.
+> **⚠️ Important**: It is recommended to use `detached=False`, but maintain a reference to the actor handle returned by `start_toolkit`. Once the handle gets garbage collected, the entire toolkit including all tools will get shut down and cleaned up nicely.
 
 ## Toolshed Dashboard
 
@@ -267,29 +299,6 @@ python examples/agentic.py --provider bedrock --model us.anthropic.claude-sonnet
 # GPT-5
 python examples/agentic.py --provider openai --model gpt-5 --config configs/vision_full.json --image examples/media/example_image.jpg "Would the alarm clock fit on the shelf?"
 ```
-
-### Advanced Example: Multi-Agent Concurrent Annotation Pipeline
-
-Process multiple images in parallel using concurrent agents that share toolshed tools. The example finds 3D volumes of objects in images and saves annotations in JSON format:
-
-```bash
-python examples/annotation/agentic_annotation_pipeline.py --num-images 4
-```
-you may add `--provider openai --model gpt-5-mini` for GPT model.
-
-The pipeline uses roborefer for pointing, depth estimator, sam2, and bounding box tools. It creates a custom save_data tool that the agent uses to save the data. All files in `examples/annotation` relate to this example.
-
-**Alternative: Launch toolshed separately** to run the annotation pipeline multiple times without waiting for tools to launch each time:
-
-```bash
-# Terminal 1: Launch toolshed once
-python examples/annotation/launch_toolshed_with_custom_tool.py
-
-# Terminal 2: Run annotation pipeline multiple times (faster startup)
-python examples/annotation/agentic_annotation_pipeline.py --skip-launch --num-images 4
-```
-
-You can also build alternative workflows where your toolshed runs in one process, and an arbitrary number of agentic processes use it's resources.
 
 ### Agent Configuration
 
@@ -600,23 +609,24 @@ The docstrings may include conditional text blocks that may be present/absent de
 These blocks are processed when generating documentation, so the LLM only sees descriptions relevant to the outputs it will actually receive.
 
 
-## More Examples
+## Examples
 
 The `examples/` directory contains various usage examples. They have default values for arguments, so should work if called with no arguments. Their outputs will be saved in `outputs/` directory.
 
-#### Example of agentic workflow:
-- **`examples/agentic.py`**: LLM integration with tools, step callbacks, and optional image input.
-
-#### Minimal examples (no vision tools):
-- **`examples/minimal_start_tools.py`**: Starting the toolkit with basic tools.
-- **`examples/minimal_call_running_tools.py`**: Calling tools from a running toolkit.
-- **`examples/code_executor_usage.py`**: CodeExecutor usage for executing python code that calls tools.
-- **`examples/distributed_usage.py`**: Showing multiple processes simultaneously contending for limited tools.
-
-#### Example pipelines with multiple vision tools:
-- **`examples/grasp_demo.py`**: Full RoboRefer(pointing) -> SAM, Depth -> GraspGen pipeline. If this runs, your vision tool environment is good.
-- **`examples/visual_multi_tool_demo.py`**: VLM → SAM2 → Depth pipeline to answer "How far is the object?"
-- **`examples/visual_reasoning_scaling_demo.py`**: Multi-GPU parallel processing demo using 8 GPUs to detect, segment, and estimate depth for multiple objects in parallel.
-
-#### Examples for individual tools:
-Most tools have an `examples/tool_usage_*.py` file demonstrating how to use the individual tool and verify that the tool and environment work correctly.
+| Example | Description |
+|---------|-------------|
+| **Agentic Workflow** | |
+| `examples/agentic.py` | LLM integration with tools, step callbacks, and optional image input |
+| **Minimal (no vision tools)** | |
+| `examples/minimal_start_tools.py` | Starting the toolkit with basic tools |
+| `examples/minimal_call_running_tools.py` | Calling tools from a running toolkit |
+| `examples/code_executor_usage.py` | CodeExecutor usage for executing Python code that calls tools |
+| `examples/distributed_usage.py` | Multiple processes simultaneously contending for limited tools |
+| **Multi-Tool Vision Pipelines** | |
+| `examples/grasp_demo.py` | Full RoboRefer → SAM → Depth → GraspGen pipeline (validates vision tool setup) |
+| `examples/visual_multi_tool_demo.py` | VLM → SAM2 → Depth pipeline to answer "How far is the object?" |
+| `examples/visual_reasoning_scaling_demo.py` | Multi-GPU parallel processing: detect, segment, and estimate depth for multiple objects |
+| **Individual Tools** | |
+| `examples/tool_usage_*.py` | Per-tool usage demos to verify individual tool and environment setup |
+| **Advanced** | |
+| `examples/annotation/` | Multi-agent concurrent annotation pipeline: processes multiple images in parallel using concurrent agents that share toolshed tools, finds 3D volumes of objects, and saves annotations in JSON format. Uses roborefer, depth estimator, SAM2, bounding box tools, and a custom `save_data` tool. Run with `python examples/annotation/agentic_annotation_pipeline.py --num-images 4`. Supports launching toolshed separately for faster iteration (see `launch_toolshed_with_custom_tool.py`). |
