@@ -113,6 +113,18 @@ fi
 echo -e "${YELLOW}Installing cuda-nvcc (for CUDA_HOME resolution)...${NC}"
 conda install -c nvidia cuda-nvcc=12.4 -y
 
+# Pre-install CLIP to work around setuptools >= 78 removing pkg_resources.
+# RoboRefer's env_setup.sh runs `pip install --upgrade setuptools` which pulls
+# setuptools >= 78, and then `pip install -e ".[train,eval]"` tries to build
+# CLIP from source. CLIP's setup.py uses `import pkg_resources` which no longer
+# exists in setuptools >= 78 (it was split out but the standalone package is not
+# on PyPI). We temporarily ensure setuptools < 78, pre-install CLIP, then let
+# env_setup.sh upgrade setuptools freely — pip will see CLIP is already installed
+# and skip the rebuild.
+echo -e "${YELLOW}Pre-installing CLIP (workaround for setuptools >= 78 removing pkg_resources)...${NC}"
+pip install "setuptools>=75,<78" 2>/dev/null
+pip install --no-build-isolation "clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1"
+
 # Run RoboRefer setup script
 echo -e "${YELLOW}Running RoboRefer env_setup.sh...${NC}"
 cd "$ROBOREFER_DIR"
