@@ -630,3 +630,19 @@ The `examples/` directory contains various usage examples. They have default val
 | `examples/tool_usage_*.py` | Per-tool usage demos to verify individual tool and environment setup |
 | **Advanced** | |
 | `examples/annotation/` | Multi-agent concurrent annotation pipeline: processes multiple images in parallel using concurrent agents that share toolshed tools, finds 3D volumes of objects, and saves annotations in JSON format. Uses roborefer, depth estimator, SAM2, bounding box tools, and a custom `save_data` tool. Run with `python examples/annotation/agentic_annotation_pipeline.py --num-images 4`. Supports launching toolshed separately for faster iteration (see `launch_toolshed_with_custom_tool.py`). |
+
+---
+
+## 📝 Citation
+
+```bibtex
+@misc{chen2025spacetoolstoolaugmentedspatialreasoning,
+    title={SpaceTools: Tool-Augmented Spatial Reasoning via Double Interactive RL}, 
+    author={Siyi Chen and Mikaela Angelina Uy and Chan Hee Song and Faisal Ladhak and Adithyavairavan Murali and Qing Qu and Stan Birchfield and Valts Blukis and Jonathan Tremblay},
+    year={2025},
+    eprint={2512.04069},
+    archivePrefix={arXiv},
+    primaryClass={cs.CV},
+    url={https://arxiv.org/abs/2512.04069}
+}
+```
