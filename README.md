@@ -1,4 +1,4 @@
-# SpaceTools: A Distributed Toolkit with Vision Tools for Visual Agents
+# SpaceTools-Toolshed: A Distributed Toolkit with Vision Tools for Visual Agents
 
 ![toolshed](examples/media/toolshed_robot.png)
 
