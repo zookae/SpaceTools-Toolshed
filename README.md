@@ -56,7 +56,7 @@ Before installing SpaceTools, ensure you have the following:
 | Requirement | Details |
 |-------------|---------|
 | **OS** | Linux (tested on Ubuntu 20.04/22.04) |
-| **Python** | 3.10 |
+| **Python** | 3.11 |
 | **Conda** | Miniconda or Anaconda for environment management |
 | **CUDA** | 11.8+ (required for GPU-accelerated vision tools) |
 | **GPU** | NVIDIA GPU with >=40 GB VRAM recommended for vision tools |
@@ -76,7 +76,7 @@ Toolshed uses **separate conda environments** for different vision tools because
 #### Step 1: Base Environment Setup
 
 ```bash
-conda create -n toolshed python==3.10 -y
+conda create -n toolshed python==3.11 -y
 conda activate toolshed
 cd SpaceTools
 pip install -e .

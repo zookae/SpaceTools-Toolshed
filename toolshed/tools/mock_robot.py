@@ -94,9 +94,13 @@ class MockRobotTool(BaseTool):
         _mock_data: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
         """
-        Simulate placing object at 2D location (always succeeds).
+        Move the robot to a place it's currently held object based on a 2D normalized image coordinate.
 
-        [[if:text]]Text output: Confirmation that placement was successful.[[/if:text]]
+        The tool will convert to a 3D placement location automatically by shooting a ray.
+
+        [[if:text]]Text output: Status of the release operation.[[/if:text]]
+        [[if:image]]Image output: View from robot camera after the placement is executed.[[/if:image]]
+        [[if:vars]]Stored variables: $captured_image (PIL Image) after the placement is executed.[[/if:vars]]
 
         Args:
             placement_point_2d: 2D normalized image coordinate [x, y] in the range [0, 1]
@@ -121,9 +125,11 @@ class MockRobotTool(BaseTool):
         _mock_data: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
         """
-        Simulate placing object at 3D location (always succeeds).
+        Move the robot to a 3D placement point and open the gripper to place the object.
 
-        [[if:text]]Text output: Confirmation that placement was successful.[[/if:text]]
+        [[if:text]]Text output: Status of the placement operation.[[/if:text]]
+        [[if:image]]Image output: View from robot camera after the placement is executed.[[/if:image]]
+        [[if:vars]]Stored variables: $captured_image (PIL Image) after the placement is executed.[[/if:vars]]
 
         Args:
             placement_point_3d: 3D point [x, y, z] in the robot's camera frame (list or numpy array)

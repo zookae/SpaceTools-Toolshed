@@ -37,7 +37,7 @@ except ImportError:
 # Verl imports (optional - only needed if using as Verl tools)
 try:
     from verl.tools.base_tool import BaseTool
-    from verl.tools.schemas import OpenAIFunctionToolSchema
+    from verl.tools.schemas import OpenAIFunctionToolSchema, ToolResponse
     from verl.utils.rollout_trace import rollout_trace_op
     VERL_AVAILABLE = True
 except ImportError:
@@ -47,6 +47,11 @@ except ImportError:
         pass
     class OpenAIFunctionToolSchema:
         pass
+    class ToolResponse:
+        def __init__(self, **kwargs):
+            self.text = kwargs.get("text")
+            self.image = kwargs.get("image")
+            self.video = kwargs.get("video")
     def rollout_trace_op(func):
         return func
 
@@ -261,23 +266,36 @@ class ToolshedMethodTool(BaseTool):
         return self._toolkit
     
     def _get_function_wrapper(self):
-        """Get the function wrapper for this tool."""
+        """Get the function wrapper for this tool.
+
+        Builds the wrapper directly from ``function_name`` (e.g.
+        ``"roborefer.detect_one"``) and the toolkit proxy, without importing
+        the tool's Python class locally.  This avoids import failures when the
+        RL worker environment doesn't have the tool's heavy dependencies
+        (e.g. ``llava``, ``cv2``, ``depth_pro``).
+        """
         if self._function_wrapper is None:
             try:
-                wrappers = get_toolshed_tool_wrappers(
-                    router_name=self.config.get("router_name", "toolshed_router"),
-                    namespace=self.config.get("namespace", "toolshed")
-                )
                 function_name = self.config.get("function_name")
-                if function_name not in wrappers:
-                    raise ValueError(f"Function {function_name} not found in Toolshed")
-                self._function_wrapper = wrappers[function_name]
+                if not function_name or "." not in function_name:
+                    raise ValueError(
+                        f"Invalid function_name '{function_name}': "
+                        "expected 'tool_name.method_name'"
+                    )
+                tool_name, method_name = function_name.split(".", 1)
+                toolkit = self._get_toolkit()
+                tool_proxy = getattr(toolkit, tool_name)
+
+                def _wrapper(_proxy=tool_proxy, _meth=method_name, **kwargs):
+                    return getattr(_proxy, _meth)(**kwargs)
+
+                self._function_wrapper = _wrapper
             except Exception as e:
                 logger.error(f"Failed to get function wrapper: {e}")
                 raise
         return self._function_wrapper
 
-    async def create(self, instance_id: Optional[str] = None, **kwargs) -> str:
+    async def create(self, instance_id: Optional[str] = None, **kwargs) -> Tuple[str, ToolResponse]:
         """Create a tool instance."""
         if instance_id is None:
             instance_id = str(uuid4())
@@ -293,20 +311,15 @@ class ToolshedMethodTool(BaseTool):
         self._get_toolkit()
         self._get_function_wrapper()
         
-        return instance_id
+        return instance_id, ToolResponse()
 
     @rollout_trace_op
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str|dict, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[ToolResponse, float, dict]:
         """Execute the Toolshed tool method.
 
-        Supports structured returns for multi-modal and variables in addition to plain text.
-        Tool methods should return a ToolResult, which will be converted to a dict:
-            {
-              "text": str,
-              "image": list[Any] | Any,
-              "video": list[Any] | Any,
-              "variables": [ {"name": str, "value": Any}, ... ]
-            }
+        Supports structured returns for multi-modal content.
+        Tool methods should return a ToolResult, which will be converted to a ToolResponse
+        with text, image, and video fields.
         """
 
         # Ensure Weave is initialized (will be a no-op if already done in create)
@@ -318,7 +331,27 @@ class ToolshedMethodTool(BaseTool):
         try:
             # Get the function wrapper
             func = self._get_function_wrapper()
-            
+
+            # Resolve image_index → PIL Image.  The schema uses
+            # use_image_by_index=True so the model must pass
+            # {"image_index": N}.  Any other format (e.g. "image": "<string>")
+            # is a schema violation and should fail — we must not silently
+            # fix malformed calls during RL or the model won't learn the
+            # correct format.
+            if "image_index" in parameters:
+                agent_data = kwargs.get("agent_data")
+                images = getattr(agent_data, "image_data", None) or []
+                if not isinstance(images, list):
+                    images = list(images)
+                idx = parameters.pop("image_index")
+                if isinstance(idx, int) and 0 <= idx < len(images):
+                    parameters["image"] = images[idx]
+                else:
+                    raise ValueError(
+                        f"image_index={idx} but only {len(images)} "
+                        "images available in conversation"
+                    )
+
             # Execute the function (run in thread pool since it's synchronous)
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, lambda: func(**parameters))
@@ -358,6 +391,17 @@ class ToolshedMethodTool(BaseTool):
                         for v in normalized["variables"]
                     ]
             
+            # Convert to verl ToolResponse.  Only pass image/video when they
+            # are actual lists — ToolResponse validates that image/video must
+            # be lists and rejects None.  Tools with no_output_image=True
+            # return None for these fields.
+            tool_response_kwargs = {"text": normalized.get("text")}
+            if normalized.get("image"):
+                tool_response_kwargs["image"] = normalized["image"]
+            if normalized.get("video"):
+                tool_response_kwargs["video"] = normalized["video"]
+            tool_response = ToolResponse(**tool_response_kwargs)
+            
             # Calculate step reward (successful execution)
             step_reward = 0.1  # Small positive reward for successful tool use
             
@@ -365,13 +409,19 @@ class ToolshedMethodTool(BaseTool):
                 "toolshed_calls": self._instance_dict[instance_id]["calls"],
                 "function_name": self.config.get("function_name", "unknown")
             }
-            print("ToolshedMethodTool: ", "step_reward:", step_reward, "metrics:", metrics)
-            return normalized, step_reward, metrics
+
+            # Include variables so the agent loop can store them for
+            # cross-tool $variable resolution.
+            if normalized.get("variables"):
+                metrics["variables"] = normalized["variables"]
+
+            logger.info(f"ToolshedMethodTool: step_reward={step_reward}, metrics={metrics}")
+            return tool_response, step_reward, metrics
             
         except Exception as e:
             logger.error(f"Error executing Toolshed function: {e}")
             # Do not penalize with a negative reward; return zero reward instead
-            return f"Error: {str(e)}", 0.0, {"error": str(e)}
+            return ToolResponse(text=f"Error: {str(e)}"), 0.0, {"error": str(e)}
 
     async def calc_reward(self, instance_id: str, **kwargs) -> float:
         """Calculate cumulative reward for this tool instance."""
@@ -412,7 +462,7 @@ class ToolshedCodeTool(BaseTool):
                 raise
         return self._toolkit
 
-    async def create(self, instance_id: Optional[str] = None, **kwargs) -> str:
+    async def create(self, instance_id: Optional[str] = None, **kwargs) -> Tuple[str, ToolResponse]:
         """Create a tool instance."""
         if instance_id is None:
             instance_id = str(uuid4())
@@ -427,10 +477,10 @@ class ToolshedCodeTool(BaseTool):
         # Ensure toolkit connection
         self._get_toolkit()
         
-        return instance_id
+        return instance_id, ToolResponse()
 
     @rollout_trace_op
-    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[str, float, dict]:
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> Tuple[ToolResponse, float, dict]:
         """Execute Python code using Toolshed."""
         
         # Ensure Weave is initialized (will be a no-op if already done in create)
@@ -444,7 +494,7 @@ class ToolshedCodeTool(BaseTool):
             code = parameters.get("code", "")
             
             if not code:
-                return "Error: No code provided", 0.0, {"error": "no_code"}
+                return ToolResponse(text="Error: No code provided"), 0.0, {"error": "no_code"}
             
             # Execute code using Toolshed's code executor
             loop = asyncio.get_event_loop()
@@ -472,7 +522,6 @@ class ToolshedCodeTool(BaseTool):
                     response += f"\nError: {stderr}"
                 
                 # Calculate step reward
-                # Remove negative penalty for failed executions
                 step_reward = 0.2 if success else 0.0
                 
                 metrics = {
@@ -481,16 +530,14 @@ class ToolshedCodeTool(BaseTool):
                     "success": success
                 }
 
-                print("ToolshedCodeTool: \n", "response: ", response, "\n", "step_reward: ", step_reward, "\n", "metrics: ", metrics)
+                logger.info(f"ToolshedCodeTool: response={response}, step_reward={step_reward}")
                 
-                return response, step_reward, metrics
+                return ToolResponse(text=response), step_reward, metrics
             else:
-                # Return zero reward for unexpected format instead of negative
-                return f"Unexpected result format: {result}", 0.0, {"error": "format_error"}
+                return ToolResponse(text=f"Unexpected result format: {result}"), 0.0, {"error": "format_error"}
                 
         except Exception as e:
-            # No negative penalty on execution error
-            return f"Execution error: {str(e)}", 0.0, {"error": str(e)}
+            return ToolResponse(text=f"Execution error: {str(e)}"), 0.0, {"error": str(e)}
 
     async def calc_reward(self, instance_id: str, **kwargs) -> float:
         """Calculate cumulative reward for this tool instance."""

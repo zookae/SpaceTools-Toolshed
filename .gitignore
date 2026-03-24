@@ -1,3 +1,10 @@
 toolshed.egg-info/
 *__pycache__*
 outputs/
+
+# Tool model repos (cloned during tool env setup)
+GraspGen/
+RoboRefer/
+
+# Model checkpoints (downloaded during tool env setup)
+checkpoints/

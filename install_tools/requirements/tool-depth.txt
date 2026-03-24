@@ -8,7 +8,7 @@
 #   source scripts/setup_tool_env.sh tool_depth depth
 #
 # Or manually:
-#   conda create -n tool_depth python==3.10 -y
+#   conda create -n tool_depth python==3.11 -y
 #   conda activate tool_depth
 #   pip install ray==2.47.1
 #   pip install -e .
