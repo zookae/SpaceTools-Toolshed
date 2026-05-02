@@ -226,7 +226,7 @@ class ToolAgent:
         
         Args:
             toolkit: ToolkitClient instance (should already be connected)
-            provider: Provider name ("openai", "llm_gateway_openai", "anthropic", "bedrock", or "sglang")
+            provider: Provider name ("openai", "nvidia", "llm_gateway_openai", "anthropic", "bedrock", or "sglang")
             model: Model to use (provider-specific default if None)
             client_kwargs: Additional kwargs for provider client initialization
             enable_variables: Whether to enable variable handling (default: True)
@@ -254,6 +254,10 @@ class ToolAgent:
             from toolshed.integration.providers.llm_gateway_openai_provider import LLMGatewayOpenAIProvider
             default_model = "gpt-4o"
             self.provider = LLMGatewayOpenAIProvider(model or default_model)
+        elif self.provider_name in {"nvidia", "nvidia_openai"}:
+            from toolshed.integration.providers.nvidia_openai_provider import NvidiaOpenAIProvider
+            default_model = "openai/openai/gpt-5.5"
+            self.provider = NvidiaOpenAIProvider(model or default_model)
         elif self.provider_name == "anthropic":
             from toolshed.integration.providers.anthropic_provider import AnthropicProvider
             default_model = "claude-opus-4-1-20250805"
@@ -271,7 +275,7 @@ class ToolAgent:
         else:
             raise ValueError(
                 f"Unknown provider: {provider}. "
-                f"Supported providers: openai, llm_gateway_openai, anthropic, bedrock, sglang"
+                f"Supported providers: openai, nvidia, llm_gateway_openai, anthropic, bedrock, sglang"
             )
         
         # Create client
@@ -996,7 +1000,7 @@ def create_tool_agent(toolkit, provider: str = "openai", model: Optional[str] = 
     
     Args:
         toolkit: ToolkitClient instance
-        provider: LLM provider ("openai", "llm_gateway_openai", "anthropic", "bedrock", or "sglang")
+        provider: LLM provider ("openai", "nvidia", "llm_gateway_openai", "anthropic", "bedrock", or "sglang")
         model: Model to use (provider-specific default if None)
         enable_variables: Whether to enable variable handling
         inject_variable_instructions: Whether to auto-append variable handling instructions

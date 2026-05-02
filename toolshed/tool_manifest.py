@@ -34,4 +34,34 @@ TOOL_MANIFEST = {
     # Robot control
     "robot": "toolshed.tools.robot:RobotTool",
     "mock_robot": "toolshed.tools.mock_robot:MockRobotTool",
+
+    # Isaac ROS manipulation primitives
+    "isaac_ros_graph": "toolshed.tools.isaac_ros:IsaacRosGraphTool",
+    "isaac_ros_launch": "toolshed.tools.isaac_ros:IsaacRosLaunchTool",
+    "isaac_ros_topic": "toolshed.tools.isaac_ros:IsaacRosTopicTool",
+    "isaac_ros_action": "toolshed.tools.isaac_ros:IsaacRosActionTool",
+    "isaac_ros_service": "toolshed.tools.isaac_ros:IsaacRosServiceTool",
+    "isaac_ros_config": "toolshed.tools.isaac_ros:IsaacRosConfigTool",
+    "isaac_ros_scene": "toolshed.tools.isaac_ros:IsaacRosSceneTool",
+    "isaac_perception": "toolshed.tools.isaac_ros:IsaacPerceptionTool",
+    "isaac_object_info": "toolshed.tools.isaac_ros:IsaacObjectInfoTool",
+    "isaac_segmentation": "toolshed.tools.isaac_ros:IsaacSegmentationTool",
+    "isaac_pick_place": "toolshed.tools.isaac_ros:IsaacPickPlaceTool",
+    "isaac_gripper": "toolshed.tools.isaac_ros:IsaacGripperTool",
+
+    # Isaac ROS manipulation launch include facades
+    "isaac_cumotion": "toolshed.tools.isaac_ros:IsaacCumotionTool",
+    "isaac_dope": "toolshed.tools.isaac_ros:IsaacDopeTool",
+    "isaac_ess": "toolshed.tools.isaac_ros:IsaacEssTool",
+    "isaac_foundationpose": "toolshed.tools.isaac_ros:IsaacFoundationposeTool",
+    "isaac_foundationstereo": "toolshed.tools.isaac_ros:IsaacFoundationstereoTool",
+    "isaac_grounding_dino": "toolshed.tools.isaac_ros:IsaacGroundingDinoTool",
+    "isaac_nvblox": "toolshed.tools.isaac_ros:IsaacNvbloxTool",
+    "isaac_object_following": "toolshed.tools.isaac_ros:IsaacObjectFollowingTool",
+    "isaac_pose_to_pose": "toolshed.tools.isaac_ros:IsaacPoseToPoseTool",
+    "isaac_realsense": "toolshed.tools.isaac_ros:IsaacRealsenseTool",
+    "isaac_rtdetr": "toolshed.tools.isaac_ros:IsaacRtdetrTool",
+    "isaac_segment_anything": "toolshed.tools.isaac_ros:IsaacSegmentAnythingTool",
+    "isaac_segment_anything2": "toolshed.tools.isaac_ros:IsaacSegmentAnything2Tool",
+    "isaac_static_transforms": "toolshed.tools.isaac_ros:IsaacStaticTransformsTool",
 }

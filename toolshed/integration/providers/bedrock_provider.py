@@ -16,6 +16,7 @@ with simple Bearer token authentication.
 import os
 import json
 import asyncio
+import re
 from typing import Dict, List, Any, Optional
 import logging
 
@@ -27,6 +28,14 @@ logger = logging.getLogger(__name__)
 
 from anthropic import AnthropicBedrock
 _ANTHROPIC_BEDROCK_AVAILABLE = True
+
+
+def _redact_secrets(text: str) -> str:
+    """Remove bearer/API token material from upstream error text before logging."""
+    text = re.sub(r"(token:\s*)[^'\"}\s]+", r"\1[redacted]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(Bearer\s+)[A-Za-z0-9_.=-]+", r"\1[redacted]", text)
+    text = re.sub(r"\b(?:sk|nvapi)-[A-Za-z0-9_.=-]+", "[redacted]", text)
+    return text
 
 
 class NvidiaLLMGatewayBedrockClient(AnthropicBedrock):
@@ -259,7 +268,7 @@ class BedrockProvider(AnthropicProvider):
                 logger.error(f"Bedrock API call failed (attempt {attempt + 1}/{max_attempts})")
                 logger.error(f"Exception type: {type(e).__name__}")
                 # Truncate exception message to avoid dumping huge request data with images
-                exception_str = str(e)
+                exception_str = _redact_secrets(str(e))
                 if len(exception_str) > 500:
                     logger.error(f"Exception message (truncated): {exception_str[:500]}...")
                 else:
@@ -274,6 +283,7 @@ class BedrockProvider(AnthropicProvider):
                     logger.error(f"Response status: {getattr(e.response, 'status_code', 'N/A')}")
                     response_text = getattr(e.response, 'text', None)
                     if response_text:
+                        response_text = _redact_secrets(response_text)
                         # Truncate response body if too long
                         if len(response_text) > 1000:
                             logger.error(f"Response body (truncated): {response_text[:1000]}...")
@@ -296,9 +306,10 @@ class BedrockProvider(AnthropicProvider):
                     logger.error(f"Exceeded max retries. Raising sanitized exception.")
                     
                     # Create a clean error message without the full request/response data
+                    sanitized_error = _redact_secrets(str(e))
                     error_msg = (
                         f"Bedrock API call failed after {max_attempts} attempts. "
-                        f"Exception: {type(e).__name__}: {str(e)[:200]}"
+                        f"Exception: {type(e).__name__}: {sanitized_error[:200]}"
                     )
                     
                     # Add request ID if available

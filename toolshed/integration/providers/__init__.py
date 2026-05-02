@@ -12,5 +12,12 @@ from .openai_provider import OpenAIProvider
 from .anthropic_provider import AnthropicProvider
 from .bedrock_provider import BedrockProvider
 from .llm_gateway_openai_provider import LLMGatewayOpenAIProvider
+from .nvidia_openai_provider import NvidiaOpenAIProvider
 
-__all__ = ["OpenAIProvider", "AnthropicProvider", "BedrockProvider", "LLMGatewayOpenAIProvider"]
+__all__ = [
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "BedrockProvider",
+    "LLMGatewayOpenAIProvider",
+    "NvidiaOpenAIProvider",
+]
