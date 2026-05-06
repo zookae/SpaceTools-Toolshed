@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -29,8 +31,11 @@ from toolshed.tools.isaac_ros import (
     IsaacRosConfigTool,
     IsaacRosGraphTool,
     IsaacRosLaunchTool,
+    IsaacRosParamTool,
     IsaacRosServiceTool,
     IsaacRosSceneTool,
+    IsaacRosTfTool,
+    IsaacRosTopicTool,
     IsaacSegmentationTool,
     build_multi_bin_goal,
     build_single_bin_goal,
@@ -96,6 +101,28 @@ def test_ros_command_runner_builds_docker_exec_with_ros_environment():
     assert "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" in shell_command
     assert "/workspaces/isaac_ros-dev/install/setup.bash" in shell_command
     assert "ros2 node list" in shell_command
+
+
+def test_cumotion_overlay_defers_result_publication_until_callback_returns():
+    source = inspect.getsource(RosCommandRunner.ensure_cumotion_goalset_compatibility)
+
+    assert "result_timeout=2147483647" in source
+    assert "rclpy_implementation as _rclpy" in source
+    assert "goal_handle._update_state(_rclpy.GoalEvent.SUCCEED)" in source
+    assert 'patched_lines.append(f"{indent}self._toolshed_mark_goal_succeeded(goal_handle)\\n")' in source
+    assert 'patched_lines.append(f"{indent}goal_handle.succeed()\\n")' not in source
+
+
+def test_isaac_sim_camera_resolution_overlay_is_env_driven():
+    source = inspect.getsource(RosCommandRunner.ensure_isaac_sim_camera_resolution_compatibility)
+
+    assert "ISAAC_IMAGE_PUBLISHER_WIDTH" in source
+    assert "ISAAC_IMAGE_PUBLISHER_HEIGHT" in source
+    assert "HAWK_IMAGE_WIDTH" in source
+    assert "HAWK_IMAGE_HEIGHT" in source
+    assert "__init__.py" in source
+    assert "init_text" in source
+    assert "toolshed_isaac_ros_manipulator_overlay" in source
 
 
 def test_recipe_registry_contains_launch_include_recipes_with_observability():
@@ -182,6 +209,58 @@ def test_graph_wait_for_corrects_action_requested_as_service():
     ]
 
 
+def test_graph_wait_for_stable_state_samples_clock_and_joint_state(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda duration: sleeps.append(duration))
+    runner = FakeRunner(
+        {
+            ("ros2", "topic", "echo", "--once", "/clock"): CommandResult(
+                ["ros2", "topic", "echo", "--once", "/clock"], 0, "clock: ok", ""
+            ),
+            ("ros2", "topic", "echo", "--once", "/isaac_joint_states"): CommandResult(
+                ["ros2", "topic", "echo", "--once", "/isaac_joint_states"], 0, "joint: ok", ""
+            ),
+        }
+    )
+
+    result = IsaacRosGraphTool(runner=runner).wait_for_stable_state(duration_s=2.5)
+
+    assert result.value["ok"] is True
+    assert result.value["state"] == "stable_wait_completed"
+    assert result.value["samples"] == {
+        "before_clock": True,
+        "before_joint": True,
+        "after_clock": True,
+        "after_joint": True,
+    }
+    assert sleeps == [2.5]
+    assert runner.calls == [
+        ["ros2", "topic", "echo", "--once", "/clock"],
+        ["ros2", "topic", "echo", "--once", "/isaac_joint_states"],
+        ["ros2", "topic", "echo", "--once", "/clock"],
+        ["ros2", "topic", "echo", "--once", "/isaac_joint_states"],
+    ]
+
+
+def test_graph_inspect_node_returns_raw_node_interfaces():
+    runner = FakeRunner(
+        {
+            ("ros2", "node", "info", "/planner"): CommandResult(
+                ["ros2", "node", "info", "/planner"],
+                0,
+                "Subscribers:\n  /joint_states: sensor_msgs/msg/JointState\nAction Servers:\n  /motion_plan\n",
+                "",
+            )
+        }
+    )
+
+    result = IsaacRosGraphTool(runner=runner).inspect_node("/planner")
+
+    assert result.value["ok"] is True
+    assert result.value["state"] == "node_ready"
+    assert "/motion_plan" in result.value["info"]
+
+
 def test_launch_recipe_start_expands_to_ros2_launch_and_returns_status():
     runner = FakeRunner()
     tool = IsaacRosLaunchTool(runner=runner, output_dir=Path("/tmp/isaac-test"))
@@ -207,6 +286,15 @@ def test_launch_recipe_aliases_resolve_common_pick_place_names():
 
     assert result.value["ok"] is True
     assert result.value["recipe"]["name"] == "pick_and_place_workflow"
+
+
+def test_unknown_launch_recipe_returns_structured_feedback():
+    result = IsaacRosLaunchTool(runner=FakeRunner()).describe_recipe("pick_and_place_tutorial")
+
+    assert result.value["ok"] is False
+    assert result.value["state"] == "unknown_recipe"
+    assert "pick_and_place_workflow" in result.value["available_recipes"]
+    assert "Call list_recipes" in result.value["next_suggested_actions"][0]
 
 
 def test_stop_recipe_applies_registered_remote_cleanup_patterns():
@@ -254,6 +342,35 @@ def test_pick_place_goal_builders_match_tutorial_payload_shape():
     assert multi["class_ids"] == ["22", "3"]
 
 
+def test_topic_inspection_and_snapshot_return_parsed_schema_and_message():
+    topic = "/joint_states"
+    responses = {
+        ("ros2", "topic", "info", topic): CommandResult(["ros2", "topic", "info", topic], 0, "Publisher count: 1\n", ""),
+        ("ros2", "topic", "type", topic): CommandResult(["ros2", "topic", "type", topic], 0, "sensor_msgs/msg/JointState\n", ""),
+        ("ros2", "topic", "hz", topic): CommandResult(["ros2", "topic", "hz", topic], 0, "average rate: 10.0\n", ""),
+        ("ros2", "interface", "show", "sensor_msgs/msg/JointState"): CommandResult(
+            ["ros2", "interface", "show", "sensor_msgs/msg/JointState"],
+            0,
+            "std_msgs/Header header\nstring[] name\nfloat64[] position\n",
+            "",
+        ),
+        ("ros2", "topic", "echo", "--once", topic): CommandResult(
+            ["ros2", "topic", "echo", "--once", topic],
+            0,
+            "name: ['shoulder_pan_joint']\nposition: [1.2]\n",
+            "",
+        ),
+    }
+    tool = IsaacRosTopicTool(runner=FakeRunner(responses))
+
+    inspected = tool.inspect_topic(topic)
+    snapshot = tool.snapshot(topic)
+
+    assert inspected.value["schema"]["fields"]["message"][0]["name"] == "header"
+    assert snapshot.value["parsed_message"]["name"] == ["shoulder_pan_joint"]
+    assert snapshot.value["parsed_message"]["position"] == [1.2]
+
+
 def test_action_and_pick_place_tools_return_action_state_and_observability():
     info_result = CommandResult(
         ["ros2", "action", "info", "/multi_object_pick_and_place"],
@@ -273,13 +390,14 @@ def test_action_and_pick_place_tools_return_action_state_and_observability():
     )
     pick_result = pick_tool.send_single_bin_goal(timeout_s=10)
 
-    assert action_result.value["ok"] is True
-    assert action_result.value["state"] == "goal_sent"
+    assert action_result.value["ok"] is False
+    assert action_result.value["state"] == "invalid_action_timeout"
     assert action_result.value["action_name"] == "/multi_object_pick_and_place"
-    assert action_result.value["recent_logs"] == [""]
+    assert action_result.value["recommended_timeout_s"] == 900.0
     assert pick_result.value["goal"]["mode"] == 0
+    assert pick_result.value["state"] == "invalid_action_timeout"
     assert pick_result.value["next_suggested_actions"]
-    assert runner.calls[-1][0:4] == ["ros2", "action", "send_goal", "--feedback"]
+    assert not any(call[:4] == ["ros2", "action", "send_goal", "--feedback"] for call in runner.calls)
 
 
 def test_action_info_requires_a_server_not_just_a_client():
@@ -311,16 +429,45 @@ def test_action_info_requires_a_server_not_just_a_client():
     assert not any(call[:4] == ["ros2", "action", "send_goal", "--feedback"] for call in runner.calls)
 
 
-def test_action_timeout_after_acceptance_is_not_reported_as_missing_server():
+def test_pick_place_action_rejects_timeout_that_would_kill_client_too_early():
     info_command = ("ros2", "action", "info", "/multi_object_pick_and_place")
+    runner = FakeRunner(
+        {
+            info_command: CommandResult(
+                list(info_command),
+                0,
+                "Action clients: 0\nAction servers: 1\n",
+                "",
+            ),
+        }
+    )
+    action_tool = IsaacRosActionTool(runner=runner)
+
+    result = action_tool.send_goal(
+        "/multi_object_pick_and_place",
+        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+        '{"mode": 0}',
+        timeout_s=45,
+    )
+
+    assert result.value["ok"] is False
+    assert result.value["state"] == "invalid_action_timeout"
+    assert result.value["missing"] == []
+    assert result.value["recommended_timeout_s"] == 900.0
+    assert "Recommended timeout: 900.0s." in result.text
+    assert not any(call[:4] == ["ros2", "action", "send_goal", "--feedback"] for call in runner.calls)
+
+
+def test_action_timeout_after_acceptance_is_not_reported_as_missing_server():
+    info_command = ("ros2", "action", "info", "/slow_action")
     goal_command = (
         "ros2",
         "action",
         "send_goal",
         "--feedback",
-        "/multi_object_pick_and_place",
-        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
-        '{"mode": 0}',
+        "/slow_action",
+        "example_interfaces/action/Fibonacci",
+        '{"order": 10}',
     )
     runner = FakeRunner(
         {
@@ -341,9 +488,9 @@ def test_action_timeout_after_acceptance_is_not_reported_as_missing_server():
     action_tool = IsaacRosActionTool(runner=runner)
 
     result = action_tool.send_goal(
-        "/multi_object_pick_and_place",
-        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
-        '{"mode": 0}',
+        "/slow_action",
+        "example_interfaces/action/Fibonacci",
+        '{"order": 10}',
         timeout_s=45,
     )
 
@@ -355,6 +502,7 @@ def test_action_timeout_after_acceptance_is_not_reported_as_missing_server():
 
 def test_action_aborted_terminal_status_is_not_reported_as_success():
     info_command = ("ros2", "action", "info", "/multi_object_pick_and_place")
+    goal_text = json.dumps(build_single_bin_goal())
     goal_command = (
         "ros2",
         "action",
@@ -362,7 +510,7 @@ def test_action_aborted_terminal_status_is_not_reported_as_success():
         "--feedback",
         "/multi_object_pick_and_place",
         "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
-        '{"mode": 0}',
+        goal_text,
     )
     runner = FakeRunner(
         {
@@ -370,6 +518,12 @@ def test_action_aborted_terminal_status_is_not_reported_as_success():
                 list(info_command),
                 0,
                 "Action clients: 0\nAction servers: 1\n",
+                "",
+            ),
+            ("ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"): CommandResult(
+                ["ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"],
+                0,
+                "geometry_msgs/PoseArray target_poses\nstring[] class_ids\nint32 mode\n---\nint32 workflow_status\n---\nstring current_state\n",
                 "",
             ),
             goal_command: CommandResult(
@@ -385,8 +539,8 @@ def test_action_aborted_terminal_status_is_not_reported_as_success():
     result = action_tool.send_goal(
         "/multi_object_pick_and_place",
         "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
-        '{"mode": 0}',
-        timeout_s=45,
+        goal_text,
+        timeout_s=900,
     )
 
     assert result.value["ok"] is False
@@ -399,6 +553,7 @@ def test_action_aborted_terminal_status_is_not_reported_as_success():
 
 def test_action_succeeded_terminal_status_is_reported_as_success():
     info_command = ("ros2", "action", "info", "/multi_object_pick_and_place")
+    goal_text = json.dumps(build_single_bin_goal())
     goal_command = (
         "ros2",
         "action",
@@ -406,7 +561,7 @@ def test_action_succeeded_terminal_status_is_reported_as_success():
         "--feedback",
         "/multi_object_pick_and_place",
         "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
-        '{"mode": 0}',
+        goal_text,
     )
     runner = FakeRunner(
         {
@@ -414,6 +569,12 @@ def test_action_succeeded_terminal_status_is_reported_as_success():
                 list(info_command),
                 0,
                 "Action clients: 0\nAction servers: 1\n",
+                "",
+            ),
+            ("ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"): CommandResult(
+                ["ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"],
+                0,
+                "geometry_msgs/PoseArray target_poses\nstring[] class_ids\nint32 mode\n---\nint32 workflow_status\n---\nstring current_state\n",
                 "",
             ),
             goal_command: CommandResult(
@@ -429,15 +590,338 @@ def test_action_succeeded_terminal_status_is_reported_as_success():
     result = action_tool.send_goal(
         "/multi_object_pick_and_place",
         "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
-        '{"mode": 0}',
-        timeout_s=45,
+        goal_text,
+        timeout_s=900,
     )
 
     assert result.value["ok"] is True
     assert result.value["state"] == "goal_succeeded"
     assert result.value["terminal_status"] == "SUCCEEDED"
     assert result.value["workflow_status"] == "2"
+    assert result.value["parsed_result"]["workflow_status"] == 2
+    assert result.value["schema"]["fields"]["goal"][0]["name"] == "target_poses"
     assert "finished with status SUCCEEDED" in result.text
+
+
+def test_action_aborted_goal_surfaces_execute_trajectory_failure():
+    info_command = ("ros2", "action", "info", "/multi_object_pick_and_place")
+    goal_text = json.dumps(build_single_bin_goal())
+    goal_command = (
+        "ros2",
+        "action",
+        "send_goal",
+        "--feedback",
+        "/multi_object_pick_and_place",
+        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+        goal_text,
+    )
+
+    class LogRunner(FakeRunner):
+        def logs(self, name, max_lines=80):
+            assert name == "pick_and_place_workflow"
+            return [
+                "[INFO] [tree]: [Execute Lift] Starting trajectory execution for object_id=0, trajectory_index=1",
+                "[ERROR] [move_group.moveit.moveit.ros.trajectory_execution_manager]: Invalid Trajectory: start point deviates from current robot state more than 0.1 at joint 'shoulder_pan_joint'.",
+                "[INFO] [move_group.moveit.moveit.ros.move_group.clear_octomap_service]: Execution completed: ABORTED",
+                "[ERROR] [tree]: [Execute Lift] execute_trajectory action server aborted",
+                "[ERROR] [tree]: [Execute Lift] Action execute_trajectory failed",
+            ]
+
+    runner = LogRunner(
+        {
+            info_command: CommandResult(list(info_command), 0, "Action servers: 1\n", ""),
+            (
+                "ros2",
+                "interface",
+                "show",
+                "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+            ): CommandResult(
+                [
+                    "ros2",
+                    "interface",
+                    "show",
+                    "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+                ],
+                0,
+                "geometry_msgs/PoseArray target_poses\nstring[] class_ids\nint32 mode\n---\nint32 workflow_status\n---\nstring current_state\n",
+                "",
+            ),
+            goal_command: CommandResult(
+                list(goal_command),
+                0,
+                "Goal accepted with ID: abc123\nResult:\n    workflow_status: 0\nGoal finished with status: ABORTED\n",
+                "",
+            ),
+        }
+    )
+
+    result = IsaacRosActionTool(runner=runner).send_goal(
+        "/multi_object_pick_and_place",
+        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+        goal_text,
+        timeout_s=900,
+    )
+
+    assert result.value["state"] == "goal_aborted"
+    assert any("Invalid Trajectory" in line for line in result.value["action_error_summary"])
+    assert any("execute_trajectory action server aborted" in line for line in result.value["action_error_summary"])
+    assert "shoulder_pan_joint" in result.text
+
+
+def test_action_accepted_without_terminal_status_is_not_success():
+    info_command = ("ros2", "action", "info", "/multi_object_pick_and_place")
+    goal_text = json.dumps(build_single_bin_goal())
+    goal_command = (
+        "ros2",
+        "action",
+        "send_goal",
+        "--feedback",
+        "/multi_object_pick_and_place",
+        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+        goal_text,
+    )
+
+    class LogRunner(FakeRunner):
+        def logs(self, name, max_lines=80):
+            assert name == "pick_and_place_workflow"
+            return [
+                "[ERROR] [cumotion_planner]: Toolshed compatibility: plan_grasp failed; status=No grasp in goal set was reachable.",
+                "Traceback (most recent call last):",
+                "  File \"/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/action/server.py\", line 377, in _execute_goal",
+                "KeyError: b'goal'",
+            ]
+
+    runner = LogRunner(
+        {
+            info_command: CommandResult(
+                list(info_command),
+                0,
+                "Action clients: 0\nAction servers: 1\n",
+                "",
+            ),
+            ("ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"): CommandResult(
+                ["ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"],
+                0,
+                "geometry_msgs/PoseArray target_poses\nstring[] class_ids\nint32 mode\n---\nint32 workflow_status\n---\nstring current_state\n",
+                "",
+            ),
+            goal_command: CommandResult(
+                list(goal_command),
+                0,
+                "Goal accepted with ID: abc123\nFeedback:\n    current_state: planning\n",
+                "",
+            )
+        }
+    )
+
+    result = IsaacRosActionTool(runner=runner).send_goal(
+        "/multi_object_pick_and_place",
+        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+        goal_text,
+        timeout_s=900,
+    )
+
+    assert result.value["ok"] is False
+    assert result.value["state"] == "goal_status_unknown"
+    assert result.value["terminal_status"] == ""
+    assert result.value["missing"] == []
+    assert any("plan_grasp failed" in line for line in result.value["action_error_summary"])
+    assert "no terminal status" in result.text
+    assert "KeyError" in result.text
+
+
+def test_action_rejects_goal_missing_schema_fields_before_send():
+    info_command = ("ros2", "action", "info", "/multi_object_pick_and_place")
+    runner = FakeRunner(
+        {
+            info_command: CommandResult(list(info_command), 0, "Action servers: 1\n", ""),
+            ("ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"): CommandResult(
+                ["ros2", "interface", "show", "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"],
+                0,
+                "geometry_msgs/PoseArray target_poses\nstring[] class_ids\nint32 mode\n---\nint32 workflow_status\n---\nstring current_state\n",
+                "",
+            ),
+        }
+    )
+
+    result = IsaacRosActionTool(runner=runner).send_goal(
+        "/multi_object_pick_and_place",
+        "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace",
+        "{}",
+        timeout_s=45,
+    )
+
+    assert result.value["ok"] is False
+    assert result.value["state"] == "invalid_goal_schema"
+    assert result.value["missing"] == ["target_poses", "class_ids", "mode"]
+    assert result.value["goal_template"]["target_poses"]["poses"]
+    assert "Goal template:" in result.text
+    assert not any(call[:4] == ["ros2", "action", "send_goal", "--feedback"] for call in runner.calls)
+
+
+def test_action_schema_template_uses_only_top_level_goal_fields():
+    action = "/multi_object_pick_and_place"
+    action_type = "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"
+    responses = {
+        ("ros2", "action", "info", action): CommandResult(
+            ["ros2", "action", "info", action], 0, "Action servers: 1\n", ""
+        ),
+        ("ros2", "action", "list", "-t"): CommandResult(
+            ["ros2", "action", "list", "-t"], 0, f"{action} [{action_type}]\n", ""
+        ),
+        ("ros2", "interface", "show", action_type): CommandResult(
+            ["ros2", "interface", "show", action_type],
+            0,
+            (
+                "uint8 mode\n"
+                "geometry_msgs/PoseArray target_poses\n"
+                "  std_msgs/Header header\n"
+                "    builtin_interfaces/Time stamp\n"
+                "      int32 sec\n"
+                "      uint32 nanosec\n"
+                "    string frame_id\n"
+                "  Pose[] poses\n"
+                "    Point position\n"
+                "      float64 x\n"
+                "      float64 y\n"
+                "      float64 z\n"
+                "    Quaternion orientation\n"
+                "      float64 x\n"
+                "      float64 y\n"
+                "      float64 z\n"
+                "      float64 w\n"
+                "string[] class_ids\n"
+                "---\n"
+                "int32 workflow_status\n"
+                "---\n"
+                "string current_state\n"
+            ),
+            "",
+        ),
+    }
+
+    result = IsaacRosActionTool(runner=FakeRunner(responses)).watch_action(action)
+
+    assert result.value["schema_summary"] == "mode:uint8, target_poses:geometry_msgs/PoseArray, class_ids:string[]"
+    assert set(result.value["goal_template"]) == {"mode", "target_poses", "class_ids"}
+    assert "header" not in result.value["goal_template"]
+
+
+def test_action_rejects_empty_pose_array_from_goal_template():
+    action = "/multi_object_pick_and_place"
+    action_type = "isaac_manipulator_interfaces/action/MultiObjectPickAndPlace"
+    responses = {
+        ("ros2", "action", "info", action): CommandResult(
+            ["ros2", "action", "info", action], 0, "Action servers: 1\n", ""
+        ),
+        ("ros2", "interface", "show", action_type): CommandResult(
+            ["ros2", "interface", "show", action_type],
+            0,
+            "uint8 mode\ngeometry_msgs/PoseArray target_poses\nstring[] class_ids\n---\nint32 workflow_status\n---\n",
+            "",
+        ),
+    }
+    goal = {
+        "mode": 0,
+        "target_poses": {"header": {"frame_id": "base_link"}, "poses": []},
+        "class_ids": [],
+    }
+
+    result = IsaacRosActionTool(runner=FakeRunner(responses)).send_goal(
+        action,
+        action_type,
+        json.dumps(goal),
+        timeout_s=45,
+    )
+
+    assert result.value["ok"] is False
+    assert result.value["state"] == "invalid_goal_schema"
+    assert result.value["missing"] == ["target_poses.poses[0]"]
+
+
+def test_service_call_returns_schema_and_parsed_response():
+    service = "/controller_manager/list_controllers"
+    service_type = "controller_manager_msgs/srv/ListControllers"
+    responses = {
+        ("ros2", "service", "type", service): CommandResult(["ros2", "service", "type", service], 0, f"{service_type}\n", ""),
+        ("ros2", "service", "list"): CommandResult(["ros2", "service", "list"], 0, f"{service}\n", ""),
+        ("ros2", "interface", "show", service_type): CommandResult(
+            ["ros2", "interface", "show", service_type],
+            0,
+            "---\nstring name\nstring state\n",
+            "",
+        ),
+        ("ros2", "service", "call", service, service_type, "{}"): CommandResult(
+            ["ros2", "service", "call", service, service_type, "{}"],
+            0,
+            "response:\n  controller:\n  - name: joint_state_broadcaster\n    state: active\n",
+            "",
+        ),
+    }
+    tool = IsaacRosServiceTool(runner=FakeRunner(responses))
+
+    inspected = tool.inspect_service(service)
+    called = tool.call_service(service, service_type, "{}")
+
+    assert inspected.value["schema"]["fields"]["response"][0]["name"] == "name"
+    assert called.value["parsed_request"] == {}
+    assert called.value["parsed_response"]["controller"][0]["state"] == "active"
+
+
+def test_service_inspection_points_to_action_when_resource_is_action():
+    resource = "/cumotion/motion_plan"
+    responses = {
+        ("ros2", "service", "type", resource): CommandResult(["ros2", "service", "type", resource], 1, "", "Unknown service"),
+        ("ros2", "service", "list"): CommandResult(["ros2", "service", "list"], 0, "", ""),
+        ("ros2", "action", "list"): CommandResult(["ros2", "action", "list"], 0, f"{resource}\n", ""),
+    }
+
+    result = IsaacRosServiceTool(runner=FakeRunner(responses)).inspect_service(resource)
+
+    assert result.value["ok"] is False
+    assert result.value["state"] == "resource_is_action"
+    assert result.value["missing"] == []
+    assert result.value["resource_category_corrections"] == [
+        {"requested": f"services:{resource}", "actual": f"actions:{resource}"}
+    ]
+    assert "watch_action" in result.value["next_suggested_actions"][0]
+
+
+def test_param_and_tf_tools_expose_low_level_ros_state():
+    runner = FakeRunner(
+        {
+            ("ros2", "param", "list", "/node"): CommandResult(
+                ["ros2", "param", "list", "/node"], 0, "  use_sim_time\n  threshold\n", ""
+            ),
+            ("ros2", "param", "get", "/node", "use_sim_time"): CommandResult(
+                ["ros2", "param", "get", "/node", "use_sim_time"], 0, "Boolean value is: True\n", ""
+            ),
+            ("ros2", "param", "set", "/node", "threshold", "0.5"): CommandResult(
+                ["ros2", "param", "set", "/node", "threshold", "0.5"], 0, "Set parameter successful\n", ""
+            ),
+            ("ros2", "param", "dump", "/node"): CommandResult(
+                ["ros2", "param", "dump", "/node"], 0, "/node:\n  ros__parameters:\n    threshold: 0.5\n", ""
+            ),
+            ("ros2", "run", "tf2_tools", "view_frames"): CommandResult(
+                ["ros2", "run", "tf2_tools", "view_frames"], 0, "base_link\nfront_stereo_camera_left\n", ""
+            ),
+            ("ros2", "run", "tf2_ros", "tf2_echo", "base_link", "front_stereo_camera_left", "--once"): CommandResult(
+                ["ros2", "run", "tf2_ros", "tf2_echo", "base_link", "front_stereo_camera_left", "--once"],
+                0,
+                "At time 0.0\n- Translation: [0.1, 0.2, 0.3]\n",
+                "",
+            ),
+        }
+    )
+    param_tool = IsaacRosParamTool(runner=runner)
+    tf_tool = IsaacRosTfTool(runner=runner)
+
+    assert param_tool.list_params("/node").value["params"] == ["use_sim_time", "threshold"]
+    assert param_tool.get_param("/node", "use_sim_time").value["ok"] is True
+    assert param_tool.set_param("/node", "threshold", "0.5").value["parsed_value"] == 0.5
+    assert param_tool.dump_params("/node").value["params"]["/node"]["ros__parameters"]["threshold"] == 0.5
+    assert "base_link" in tf_tool.list_frames().value["frames"]
+    assert tf_tool.lookup_transform("base_link", "front_stereo_camera_left").value["ok"] is True
 
 
 def test_launch_logs_surface_critical_error_lines():
@@ -484,6 +968,74 @@ def test_pick_place_launch_uses_prepared_config_overlay_when_available():
     assert "manipulator_workflow_config:=/tmp/toolshed_pick_place_config.yaml" in result.value["command"]
     assert any("prepared pick-and-place config" in warning for warning in result.value["warnings"])
     assert "Warnings:" in result.text
+
+
+def test_pick_place_launch_installs_isaac_sim_camera_resolution_overlay():
+    class CompatRunner(FakeRunner):
+        container_name = "isaac_ros_dev_container"
+
+        def read_file(self, path, timeout_s=10):
+            return CommandResult(["read", str(path)], 0, "workflow_type: PICK_AND_PLACE\n", "")
+
+        def ensure_isaac_sim_camera_resolution_compatibility(self):
+            self.calls.append(["ENSURE_ISAAC_SIM_CAMERA_RESOLUTION"])
+            return CommandResult(["ensure_isaac_sim_camera_resolution_compatibility"], 0, "ok", "")
+
+    runner = CompatRunner()
+
+    result = IsaacRosLaunchTool(
+        runner=runner, output_dir=Path("/tmp/isaac-test")
+    ).start_recipe("pick_and_place")
+
+    assert result.value["ok"] is True
+    assert ["ENSURE_ISAAC_SIM_CAMERA_RESOLUTION"] in runner.calls
+    assert "ok" in result.value["recent_logs"]
+
+
+def test_pick_place_recipe_treats_perception_topics_as_event_triggered():
+    responses = {
+        ("ros2", "node", "list"): CommandResult(["ros2", "node", "list"], 0, "/tree\n", ""),
+        ("ros2", "topic", "list"): CommandResult(["ros2", "topic", "list"], 0, "", ""),
+        ("ros2", "service", "list"): CommandResult(["ros2", "service", "list"], 0, "", ""),
+        ("ros2", "action", "list"): CommandResult(["ros2", "action", "list"], 0, "", ""),
+    }
+    for topic, topic_type, streaming in [
+        ("/detections", "vision_msgs/msg/Detection3DArray", False),
+        ("/pose_estimation/output", "geometry_msgs/msg/PoseArray", False),
+        ("/front_stereo_camera/left/image_raw", "sensor_msgs/msg/Image", True),
+        ("/front_stereo_camera/depth/ground_truth", "sensor_msgs/msg/Image", True),
+    ]:
+        responses[("ros2", "topic", "info", topic)] = CommandResult(
+            ["ros2", "topic", "info", topic], 0, f"Type: {topic_type}\nPublisher count: 1\n", ""
+        )
+        responses[("ros2", "topic", "type", topic)] = CommandResult(
+            ["ros2", "topic", "type", topic], 0, f"{topic_type}\n", ""
+        )
+        responses[("ros2", "topic", "hz", topic)] = CommandResult(
+            ["ros2", "topic", "hz", topic],
+            0 if streaming else 124,
+            "average rate: 30.0\n" if streaming else "",
+            "" if streaming else "Timed out",
+        )
+    for action in [
+        "/multi_object_pick_and_place",
+        "/get_objects",
+        "/get_object_pose",
+        "/cumotion/motion_plan",
+    ]:
+        responses[("ros2", "action", "info", action)] = CommandResult(
+            ["ros2", "action", "info", action], 0, "Action clients: 0\nAction servers: 1\n", ""
+        )
+
+    result = IsaacRosLaunchTool(
+        runner=FakeRunner(responses), output_dir=Path("/tmp/isaac-test")
+    ).inspect_recipe_outputs("pick_and_place_workflow")
+
+    assert result.value["ok"] is True
+    assert result.value["state"] == "ready_waiting_for_triggered_outputs"
+    assert result.value["missing"] == []
+    assert result.value["deferred_outputs"] == ["/detections", "/pose_estimation/output"]
+    assert "Deferred/event-triggered outputs" in result.text
 
 
 def test_pick_place_failed_goal_includes_workflow_error_summary():
@@ -574,6 +1126,14 @@ def test_pick_place_config_defaults_are_headless_safe(tmp_path):
     assert output_path.exists()
     assert Path(result.value["artifacts"]["host_behavior_tree_config_path"]).exists()
     assert Path(result.value["artifacts"]["host_blackboard_config_path"]).exists()
+    assert Path(result.value["artifacts"]["host_moveit_controllers_config_path"]).exists()
+    assert result.value["config"]["moveit_controllers_file_path"].endswith(
+        "moveit_sim_controllers_toolshed.yaml"
+    )
+    assert (
+        result.value["moveit_controllers_config"]["trajectory_execution"]["allowed_start_tolerance"]
+        == 1.0
+    )
 
 
 def test_pick_place_config_surfaces_forced_headless_values_in_text(tmp_path):
@@ -642,6 +1202,12 @@ def test_pick_place_config_removes_crashing_joint_state_broadcaster_from_sim_ove
                 "joint_state_broadcaster": {"ros__parameters": {}},
             }
         ),
+        "/share/isaac_manipulator_robot_description/config/moveit_sim_controllers.yaml": yaml.safe_dump(
+            {
+                "trajectory_execution": {"allowed_start_tolerance": 0.1},
+                "moveit_simple_controller_manager": {},
+            }
+        ),
     }
     runner = FileRunner(files)
     tool = IsaacRosConfigTool(runner=runner, output_dir=tmp_path)
@@ -654,6 +1220,10 @@ def test_pick_place_config_removes_crashing_joint_state_broadcaster_from_sim_ove
     assert "joint_state_broadcaster" not in controller_params
     assert "joint_state_broadcaster" not in ros2_control_config
     assert result.value["config"]["ros2_controllers_file_path"] == ros2_control_path
+    moveit_controllers_path = result.value["artifacts"]["moveit_controllers_config_path"]
+    moveit_controllers_config = yaml.safe_load(runner.files[moveit_controllers_path])
+    assert moveit_controllers_config["trajectory_execution"]["allowed_start_tolerance"] == 1.0
+    assert result.value["config"]["moveit_controllers_file_path"] == moveit_controllers_path
 
 
 def test_pick_place_config_rejects_ground_truth_pose_for_multi_object_bt(tmp_path):
@@ -799,6 +1369,21 @@ def test_tool_schemas_are_model_callable():
     assert "isaac_ros_service.inspect_service" in service_schema_names
     assert "isaac_ros_service.call_service" in service_schema_names
 
+    param_schema_names = {
+        schema["function"]["name"]
+        for schema in IsaacRosParamTool(runner=FakeRunner()).get_openai_schemas()
+    }
+    assert "isaac_ros_param.list_params" in param_schema_names
+    assert "isaac_ros_param.get_param" in param_schema_names
+    assert "isaac_ros_param.set_param" in param_schema_names
+
+    tf_schema_names = {
+        schema["function"]["name"]
+        for schema in IsaacRosTfTool(runner=FakeRunner()).get_openai_schemas()
+    }
+    assert "isaac_ros_tf.list_frames" in tf_schema_names
+    assert "isaac_ros_tf.lookup_transform" in tf_schema_names
+
     object_info_schema_names = {
         schema["function"]["name"]
         for schema in IsaacObjectInfoTool(runner=FakeRunner()).get_openai_schemas()
@@ -827,6 +1412,8 @@ def test_isaac_tools_are_registered_in_manifest_and_demo_config():
         "isaac_pick_place",
         "isaac_gripper",
         "isaac_ros_service",
+        "isaac_ros_param",
+        "isaac_ros_tf",
         "isaac_object_info",
         "isaac_segmentation",
         "isaac_cumotion",
@@ -855,3 +1442,30 @@ def test_isaac_tools_are_registered_in_manifest_and_demo_config():
     demo_config = json.loads(config_path.read_text())
     assert expected_tools.issubset(demo_config)
     assert demo_config["isaac_ros_topic"]["args"]["no_output_image"] is False
+
+    strict_config_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "isaac_ros_manipulation_pick_place_ros_strict.json"
+    )
+    strict_config = json.loads(strict_config_path.read_text())
+    assert set(strict_config) == {
+        "isaac_ros_graph",
+        "isaac_ros_launch",
+        "isaac_ros_topic",
+        "isaac_ros_action",
+        "isaac_ros_service",
+        "isaac_ros_param",
+        "isaac_ros_tf",
+    }
+    assert "isaac_pick_place" not in strict_config
+    assert "isaac_ros_config" not in strict_config
+
+    visual_config_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "isaac_ros_manipulation_pick_place_ros_visual.json"
+    )
+    visual_config = json.loads(visual_config_path.read_text())
+    assert set(strict_config).issubset(visual_config)
+    assert {"visual_io", "vision_ops"}.issubset(visual_config)

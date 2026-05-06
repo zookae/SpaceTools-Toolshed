@@ -34,6 +34,10 @@ DEFAULT_MULTI_BIN_POSES = [
     [-0.25, 0.40, 0.40, -0.677772, 0.734752, 0.020993, 0.017994],
 ]
 DEFAULT_MULTI_BIN_CLASS_IDS = ["22", "3"]
+MIN_ACTION_TIMEOUTS = {
+    "/multi_object_pick_and_place": 900.0,
+}
+MOVEIT_SIM_ALLOWED_START_TOLERANCE = 1.0
 
 _DEPTH_RENDER_SCRIPT = r"""
 import json
@@ -146,7 +150,43 @@ def _result_text(payload: dict[str, Any]) -> str:
     effective_keys = ("use_ground_truth_pose_in_sim", "enable_nvblox", "enable_rviz_visualization")
     effective_values = [f"{key}={config[key]}" for key in effective_keys if key in config]
     effective_suffix = f" Effective config: {', '.join(effective_values)}." if effective_values else ""
-    text = f"{payload['summary']} State: {payload['state']}.{suffix}{warning_suffix}{effective_suffix}"
+    schema_suffix = ""
+    if payload.get("schema_summary"):
+        schema_suffix = f" Schema: {payload['schema_summary']}."
+    template_suffix = ""
+    if payload.get("goal_template") is not None:
+        template = json.dumps(payload["goal_template"], separators=(",", ":"))
+        if len(template) > 700:
+            template = template[:700] + "..."
+        template_suffix = f" Goal template: {template}."
+    timeout_suffix = ""
+    if payload.get("recommended_timeout_s"):
+        timeout_suffix = f" Recommended timeout: {payload['recommended_timeout_s']}s."
+    deferred_outputs = payload.get("deferred_outputs") or []
+    deferred_suffix = (
+        f" Deferred/event-triggered outputs: {', '.join(deferred_outputs)}."
+        if deferred_outputs
+        else ""
+    )
+    recipe = payload.get("recipe") or {}
+    recipe_suffix = ""
+    if isinstance(recipe, dict):
+        recipe_parts = []
+        if recipe.get("produced_actions"):
+            recipe_parts.append(f"actions={','.join(recipe['produced_actions'])}")
+        if recipe.get("produced_topics"):
+            recipe_parts.append(f"topics={','.join(recipe['produced_topics'])}")
+        if recipe.get("event_driven_topics"):
+            recipe_parts.append(f"event_driven={','.join(recipe['event_driven_topics'])}")
+        if recipe.get("render_topics"):
+            recipe_parts.append(f"renders={','.join(recipe['render_topics'])}")
+        if recipe_parts:
+            recipe_suffix = f" Recipe resources: {'; '.join(recipe_parts)}."
+    text = (
+        f"{payload['summary']} State: {payload['state']}."
+        f"{suffix}{warning_suffix}{effective_suffix}{schema_suffix}{template_suffix}"
+        f"{timeout_suffix}{deferred_suffix}{recipe_suffix}"
+    )
     critical = _agent_feedback_lines(payload)
     if critical:
         text += " Critical logs: " + " | ".join(critical)
@@ -162,6 +202,97 @@ def _agent_feedback_lines(payload: dict[str, Any], max_lines: int = 32) -> list[
     return lines[-max_lines:]
 
 
+def _schema_summary(schema: dict[str, Any]) -> str:
+    fields = ((schema or {}).get("fields") or {}).get("goal") or ((schema or {}).get("fields") or {}).get("request")
+    if not fields:
+        fields = ((schema or {}).get("fields") or {}).get("message") or []
+    if not fields:
+        return ""
+    return ", ".join(f"{field['name']}:{field['type']}" for field in fields[:12])
+
+
+def _template_value_for_type(field_type: str) -> Any:
+    if field_type.endswith("[]") or "[" in field_type:
+        return []
+    lower_type = field_type.lower()
+    if lower_type.endswith("posearray"):
+        return {
+            "header": {"frame_id": "base_link"},
+            "poses": [
+                {
+                    "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                }
+            ],
+        }
+    if lower_type.endswith("pose"):
+        return {
+            "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        }
+    if lower_type.endswith("point") or lower_type.endswith("vector3"):
+        return {"x": 0.0, "y": 0.0, "z": 0.0}
+    if lower_type.endswith("quaternion"):
+        return {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
+    if lower_type in {"bool", "boolean"}:
+        return False
+    if lower_type.startswith(("float", "double")):
+        return 0.0
+    if lower_type.startswith(("int", "uint", "byte", "char")):
+        return 0
+    if lower_type in {"string", "wstring"}:
+        return ""
+    return {}
+
+
+def _goal_template_from_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
+    goal_fields = ((schema or {}).get("fields") or {}).get("goal") or []
+    if not goal_fields:
+        return None
+    return {
+        field["name"]: _template_value_for_type(field["type"])
+        for field in goal_fields
+    }
+
+
+def _missing_goal_fields(parsed_goal: Any, schema: dict[str, Any]) -> list[str]:
+    goal_fields = ((schema or {}).get("fields") or {}).get("goal") or []
+    if not goal_fields:
+        return []
+    if not isinstance(parsed_goal, dict):
+        return [field["name"] for field in goal_fields]
+    template = _goal_template_from_schema(schema) or {}
+    missing: list[str] = []
+    for field in goal_fields:
+        name = field["name"]
+        if name not in parsed_goal:
+            missing.append(name)
+            continue
+        missing.extend(_missing_template_paths(parsed_goal[name], template.get(name), name))
+    return missing
+
+
+def _missing_template_paths(value: Any, template: Any, path: str) -> list[str]:
+    if template is None:
+        return []
+    if isinstance(template, dict):
+        if not isinstance(value, dict):
+            return [path]
+        missing: list[str] = []
+        for key, child_template in template.items():
+            child_path = f"{path}.{key}"
+            if key not in value:
+                missing.append(child_path)
+                continue
+            missing.extend(_missing_template_paths(value[key], child_template, child_path))
+        return missing
+    if isinstance(template, list) and template:
+        if not isinstance(value, list) or not value:
+            return [f"{path}[0]"]
+        return _missing_template_paths(value[0], template[0], f"{path}[0]")
+    return []
+
+
 def _action_count(info_text: str, label: str) -> int:
     match = re.search(rf"{re.escape(label)}:\s*([0-9]+)", info_text)
     return int(match.group(1)) if match else 0
@@ -169,6 +300,140 @@ def _action_count(info_text: str, label: str) -> int:
 
 def _items_from_output(result: CommandResult) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _parse_interface_fields(raw_schema: str, section_names: list[str]) -> dict[str, Any]:
+    """Best-effort parse of `ros2 interface show` output into request/result/feedback fields."""
+    sections: dict[str, list[dict[str, str]]] = {name: [] for name in section_names}
+    current_index = 0
+    constants: list[str] = []
+    for raw_line in raw_schema.splitlines():
+        uncommented = raw_line.split("#", 1)[0].rstrip()
+        line = uncommented.strip()
+        if not line:
+            continue
+        if line == "---":
+            current_index = min(current_index + 1, len(section_names) - 1)
+            continue
+        if uncommented[:1].isspace():
+            continue
+        if "=" in line and not line.startswith(("string ", "wstring ")):
+            constants.append(line)
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        field_type, field_name = parts[0], parts[1]
+        sections[section_names[current_index]].append(
+            {"type": field_type, "name": field_name}
+        )
+    payload: dict[str, Any] = {key: value for key, value in sections.items() if value}
+    if constants:
+        payload["constants"] = constants
+    return payload
+
+
+def _interface_schema(runner: Any, interface_type: str, timeout_s: float = 10.0) -> dict[str, Any]:
+    resolved_type = _resolved_interface_type(runner, interface_type)
+    result = runner.run(["ros2", "interface", "show", resolved_type], timeout_s=timeout_s)
+    if "/action/" in resolved_type:
+        section_names = ["goal", "result", "feedback"]
+    elif "/srv/" in resolved_type:
+        section_names = ["request", "response"]
+    else:
+        section_names = ["message"]
+    return {
+        "ok": result.ok,
+        "interface_type": resolved_type,
+        "raw": result.stdout,
+        "fields": _parse_interface_fields(result.stdout, section_names) if result.ok else {},
+        "command": result.args,
+        "stderr": result.stderr,
+    }
+
+
+def _safe_yaml_parse(text: str) -> Any | None:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if isinstance(parsed, (dict, list, str, int, float, bool)) or parsed is None:
+        return parsed
+    return None
+
+
+def _indented_block_after_label(text: str, label: str) -> str:
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip().rstrip(":") == label.rstrip(":"):
+            start = index + 1
+            break
+    if start is None:
+        return ""
+    block: list[str] = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        if not stripped:
+            if block:
+                break
+            continue
+        if not line.startswith((" ", "\t")) and block:
+            break
+        if stripped.startswith("Goal finished with status:"):
+            break
+        block.append(line)
+    return "\n".join(block).strip()
+
+
+def _parse_action_stdout(stdout: str) -> dict[str, Any]:
+    result_block = _indented_block_after_label(stdout, "Result")
+    feedback_blocks = re.findall(r"Feedback:\s*\n((?:[ \t].+\n?)+)", stdout)
+    return {
+        "result": _safe_yaml_parse(result_block) if result_block else None,
+        "feedback": [
+            parsed
+            for parsed in (_safe_yaml_parse(block) for block in feedback_blocks[-5:])
+            if parsed is not None
+        ],
+    }
+
+
+def _parse_service_stdout(stdout: str) -> Any | None:
+    response_block = _indented_block_after_label(stdout, "response")
+    if response_block:
+        return _safe_yaml_parse(response_block) or response_block
+    return _safe_yaml_parse(stdout)
+
+
+def _action_type_from_list(runner: Any, action_name: str, timeout_s: float = 10.0) -> tuple[str, CommandResult]:
+    result = runner.run(["ros2", "action", "list", "-t"], timeout_s=timeout_s)
+    action_type = ""
+    pattern = re.compile(rf"^{re.escape(action_name)}\s+\[([^\]]+)\]")
+    for line in result.stdout.splitlines():
+        match = pattern.search(line.strip())
+        if match:
+            action_type = match.group(1)
+            break
+    return action_type, result
+
+
+def _recipe_logs_for_action(action_name: str) -> str | None:
+    if action_name in {
+        "/multi_object_pick_and_place",
+        "/get_objects",
+        "/get_object_pose",
+        "/detect_objects",
+        "/get_selected_object",
+        "/add_segmentation_mask",
+    }:
+        return "pick_and_place_workflow"
+    if action_name in {"/cumotion/motion_plan", "/attach_object"}:
+        return "cumotion"
+    return None
 
 
 def _parse_int_list(value: str | list[int] | tuple[int, ...] | None) -> list[int]:
@@ -198,8 +463,18 @@ def _critical_log_lines(logs: list[str], max_lines: int = 80) -> list[str]:
         "joint_state was not received",
         "Failed to plan",
         "MoveItErrorCodes",
+        "goal validation failed",
+        "validation failed",
         "Error raised in execute callback",
         "Error message:",
+        "Invalid Trajectory",
+        "start point deviates",
+        "execute_trajectory action server aborted",
+        "Action execute_trajectory failed",
+        "Execution completed: ABORTED",
+        "[Execute Grasp]",
+        "[Execute Lift]",
+        "[Execute Drop]",
         "[Plan To Grasp]",
         "[Read Grasp Poses]",
         "Goal finished with status:",
@@ -264,6 +539,20 @@ def _recipe_command(recipe: LaunchRecipe, overrides: Mapping[str, Any], runner: 
     command = ["ros2", "launch", package, recipe.launch_file]
     command.extend(f"{key}:={value}" for key, value in launch_args.items())
     return command
+
+
+def _unknown_recipe_payload(recipe_name: str, exc: Exception) -> dict[str, Any]:
+    return _stateful_payload(
+        ok=False,
+        state="unknown_recipe",
+        summary=str(exc),
+        missing=[recipe_name],
+        next_suggested_actions=[
+            "Call list_recipes and choose one of the available recipe names.",
+        ],
+        available_recipes=sorted(RECIPES),
+        recent_logs=[str(exc)],
+    )
 
 
 def _container_default_config_path(runner: Any) -> str | None:
@@ -529,6 +818,104 @@ class IsaacRosGraphTool(_IsaacTool):
         )
         return ToolResult(payload, text=_result_text(payload))
 
+    @tool_method
+    def wait_for_stable_state(
+        self,
+        duration_s: float = 120.0,
+        clock_topic: str = "/clock",
+        joint_topic: str = "/isaac_joint_states",
+        sample_timeout_s: float = 5.0,
+    ) -> ToolResult[dict[str, Any]]:
+        """
+        Wait a fixed duration while sampling ROS clock and joint-state topics before and after.
+
+        [[if:text]]Text output: Settle duration, sampled topic availability, and suggested next checks before sending motion actions.[[/if:text]]
+
+        Args:
+            duration_s: Wall-clock seconds to wait for simulated time, TF, and joint states to settle.
+            clock_topic: ROS clock topic to sample before and after the wait.
+            joint_topic: Robot joint-state topic to sample before and after the wait.
+            sample_timeout_s: Timeout for each topic sample.
+
+        Returns:
+            dict: Observability payload with topic sample status and elapsed wait time.
+        """
+        time_mod = __import__("time")
+        duration_s = max(0.0, float(duration_s))
+        duration_s = min(duration_s, 300.0)
+        sample_timeout_s = max(0.1, float(sample_timeout_s))
+
+        before_clock = self._runner.run(["ros2", "topic", "echo", "--once", clock_topic], timeout_s=sample_timeout_s)
+        before_joint = self._runner.run(["ros2", "topic", "echo", "--once", joint_topic], timeout_s=sample_timeout_s)
+        started = time_mod.time()
+        time_mod.sleep(duration_s)
+        elapsed_s = time_mod.time() - started
+        after_clock = self._runner.run(["ros2", "topic", "echo", "--once", clock_topic], timeout_s=sample_timeout_s)
+        after_joint = self._runner.run(["ros2", "topic", "echo", "--once", joint_topic], timeout_s=sample_timeout_s)
+
+        samples = {
+            "before_clock": before_clock.ok,
+            "before_joint": before_joint.ok,
+            "after_clock": after_clock.ok,
+            "after_joint": after_joint.ok,
+        }
+        missing = [
+            name
+            for name, ok in samples.items()
+            if not ok
+        ]
+        ok = bool(after_clock.ok and after_joint.ok)
+        payload = _stateful_payload(
+            ok=ok,
+            state="stable_wait_completed" if ok else "stable_wait_completed_with_missing_samples",
+            summary=f"Waited {elapsed_s:.1f}s for ROS simulated time and robot state to settle",
+            missing=missing,
+            next_suggested_actions=[
+                "Call isaac_ros_action.watch_action before sending a long-running motion action.",
+                "Call isaac_ros_topic.inspect_topic on camera or joint topics if samples were missing.",
+                "Send the manipulation action only after required actions and robot state are available.",
+            ],
+            duration_s=duration_s,
+            elapsed_s=elapsed_s,
+            clock_topic=clock_topic,
+            joint_topic=joint_topic,
+            samples=samples,
+            recent_logs=recent_logs_from_results([before_clock, before_joint, after_clock, after_joint]),
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+    @tool_method
+    def inspect_node(self, node_name: str, timeout_s: float = 10.0) -> ToolResult[dict[str, Any]]:
+        """
+        Inspect a ROS node's publishers, subscribers, services, and actions.
+
+        [[if:text]]Text output: Node info text, command status, and suggested next checks.[[/if:text]]
+
+        Args:
+            node_name: ROS node name.
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with node info and raw command output.
+        """
+        result = self._runner.run(["ros2", "node", "info", node_name], timeout_s=timeout_s)
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="node_ready" if result.ok else "node_missing",
+            summary=f"Node {node_name} inspected" if result.ok else f"Node {node_name} is unavailable",
+            missing=[] if result.ok else [node_name],
+            next_suggested_actions=[
+                "Use listed publishers/subscribers to inspect related topics.",
+                "Use listed services/actions to call the node's command APIs.",
+            ],
+            recent_logs=recent_logs_from_results([result]),
+            node_name=node_name,
+            info=result.stdout,
+            command=result.args,
+            stderr=result.stderr,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
 
 class IsaacRosLaunchTool(_IsaacTool):
     """Start, stop, and inspect registered Isaac ROS launch recipes."""
@@ -568,7 +955,11 @@ class IsaacRosLaunchTool(_IsaacTool):
         Returns:
             dict: Recipe metadata and launch command.
         """
-        recipe = _recipe(recipe_name)
+        try:
+            recipe = _recipe(recipe_name)
+        except ValueError as exc:
+            payload = _unknown_recipe_payload(recipe_name, exc)
+            return ToolResult(payload, text=_result_text(payload))
         payload = _stateful_payload(
             ok=True,
             state="ready",
@@ -599,7 +990,11 @@ class IsaacRosLaunchTool(_IsaacTool):
         Returns:
             dict: Observability payload with process state and recipe resources.
         """
-        recipe = _recipe(recipe_name)
+        try:
+            recipe = _recipe(recipe_name)
+        except ValueError as exc:
+            payload = _unknown_recipe_payload(recipe_name, exc)
+            return ToolResult(payload, text=_result_text(payload))
         if restart:
             self._runner.stop(recipe.name)
         parsed_overrides = parse_overrides(overrides)
@@ -619,6 +1014,12 @@ class IsaacRosLaunchTool(_IsaacTool):
                 )
         command = _recipe_command(recipe, parsed_overrides, self._runner)
         compatibility_results = []
+        if recipe.name == "pick_and_place_workflow" and hasattr(
+            self._runner, "ensure_isaac_sim_camera_resolution_compatibility"
+        ):
+            compatibility_results.append(
+                self._runner.ensure_isaac_sim_camera_resolution_compatibility()
+            )
         if hasattr(self._runner, "ensure_moveit_compatibility"):
             compatibility_results.append(self._runner.ensure_moveit_compatibility())
         if recipe.name in {"pick_and_place_workflow", "cumotion"} and hasattr(
@@ -648,6 +1049,7 @@ class IsaacRosLaunchTool(_IsaacTool):
                 produced_topics=recipe.produced_topics,
                 produced_actions=recipe.produced_actions,
                 produced_services=recipe.produced_services,
+                event_driven_topics=recipe.event_driven_topics,
                 render_topics=recipe.render_topics,
                 warnings=warnings,
             )
@@ -677,7 +1079,11 @@ class IsaacRosLaunchTool(_IsaacTool):
         Returns:
             dict: Observability payload with final process state.
         """
-        recipe = _recipe(recipe_name)
+        try:
+            recipe = _recipe(recipe_name)
+        except ValueError as exc:
+            payload = _unknown_recipe_payload(recipe_name, exc)
+            return ToolResult(payload, text=_result_text(payload))
         state = self._runner.stop(recipe.name)
         if recipe.cleanup_patterns and hasattr(self._runner, "stop_remote_patterns"):
             self._runner.stop_remote_patterns(recipe.cleanup_patterns)
@@ -708,7 +1114,11 @@ class IsaacRosLaunchTool(_IsaacTool):
         Returns:
             dict: Observability payload with process and recipe metadata.
         """
-        recipe = _recipe(recipe_name)
+        try:
+            recipe = _recipe(recipe_name)
+        except ValueError as exc:
+            payload = _unknown_recipe_payload(recipe_name, exc)
+            return ToolResult(payload, text=_result_text(payload))
         state = self._runner.status(recipe.name)
         log_path = state.log_path or str(self._recipe_log_path(recipe.name))
         payload = _stateful_payload(
@@ -740,7 +1150,11 @@ class IsaacRosLaunchTool(_IsaacTool):
         Returns:
             dict: Observability payload with recent logs.
         """
-        recipe = _recipe(recipe_name)
+        try:
+            recipe = _recipe(recipe_name)
+        except ValueError as exc:
+            payload = _unknown_recipe_payload(recipe_name, exc)
+            return ToolResult(payload, text=_result_text(payload))
         logs = self._recipe_logs(recipe.name, max_lines=max_lines)
         error_summary = _critical_log_lines(logs)
         payload = _stateful_payload(
@@ -776,7 +1190,11 @@ class IsaacRosLaunchTool(_IsaacTool):
         Returns:
             dict: Observability payload for this recipe's advertised API surface.
         """
-        recipe = _recipe(recipe_name)
+        try:
+            recipe = _recipe(recipe_name)
+        except ValueError as exc:
+            payload = _unknown_recipe_payload(recipe_name, exc)
+            return ToolResult(payload, text=_result_text(payload))
         topic_tool = IsaacRosTopicTool(runner=self._runner, output_dir=self._output_dir)
         action_tool = IsaacRosActionTool(runner=self._runner, output_dir=self._output_dir)
         graph_tool = IsaacRosGraphTool(runner=self._runner, output_dir=self._output_dir)
@@ -811,30 +1229,56 @@ class IsaacRosLaunchTool(_IsaacTool):
                 missing_services.append(service)
 
         missing = []
+        deferred_outputs = []
+        event_driven_topics = set(recipe.event_driven_topics)
         for topic, result in topic_results.items():
             if not result.get("ok"):
-                missing.extend(result.get("missing") or [topic])
+                topic_missing = result.get("missing") or [topic]
+                if (
+                    topic in event_driven_topics
+                    and result.get("state") == "not_streaming"
+                    and topic_missing == [f"{topic}:messages"]
+                ):
+                    deferred_outputs.append(topic)
+                else:
+                    missing.extend(topic_missing)
         for action, result in action_results.items():
             if not result.get("ok"):
                 missing.extend(result.get("missing") or [action])
         missing.extend(missing_services)
-        payload = _stateful_payload(
-            ok=not missing,
-            state="outputs_ready" if not missing else "missing_outputs",
-            summary=(
+        if not missing and deferred_outputs:
+            state = "ready_waiting_for_triggered_outputs"
+            summary = (
+                f"Recipe {recipe.name} launch outputs are ready; "
+                f"{len(deferred_outputs)} event-triggered topic(s) have not published yet"
+            )
+            next_suggested_actions = [
+                "If the action server is available, send a validated action goal; deferred topics may publish only while the action runs.",
+                "Call logs_recipe if the action later fails or the deferred topics still do not publish.",
+                "Use render_image or render_depth on render topics for visual state before and after the action.",
+            ]
+        else:
+            state = "outputs_ready" if not missing else "missing_outputs"
+            summary = (
                 f"Recipe {recipe.name} produced resources are ready"
                 if not missing
                 else f"Recipe {recipe.name} is missing {len(missing)} produced resource(s)"
-            ),
-            missing=missing,
-            next_suggested_actions=[
+            )
+            next_suggested_actions = [
                 "Call logs_recipe for this recipe if expected outputs are missing.",
                 "Call start_recipe or the recipe-specific start tool if the recipe is stopped.",
                 "Use isaac_ros_topic.snapshot or render_image for deeper topic inspection.",
-            ],
+            ]
+        payload = _stateful_payload(
+            ok=not missing,
+            state=state,
+            summary=summary,
+            missing=missing,
+            next_suggested_actions=next_suggested_actions,
             artifacts={"log_path": str(self._recipe_log_path(recipe.name)), "renders": render_artifacts},
             recent_logs=self._recipe_logs(recipe.name, max_lines=30),
             recipe=recipe.to_dict(),
+            deferred_outputs=deferred_outputs,
             topics=topic_results,
             actions=action_results,
             services=services,
@@ -845,13 +1289,18 @@ class IsaacRosLaunchTool(_IsaacTool):
         return self._output_dir / "logs" / f"{recipe_name}.log"
 
     def _recipe_logs(self, recipe_name: str, max_lines: int = 80) -> list[str]:
-        logs = self._runner.logs(recipe_name, max_lines=max_lines)
-        if logs:
-            return logs
         log_path = self._recipe_log_path(recipe_name)
-        if not log_path.exists():
-            return []
-        return tail_lines(log_path.read_text(errors="replace"), max_lines=max_lines)
+        if log_path.exists():
+            text = log_path.read_text(errors="replace")
+            lines = text.splitlines()
+            critical = _critical_log_lines(lines, max_lines=80)
+            recent = tail_lines(text, max_lines=max_lines)
+            merged: list[str] = []
+            for line in critical + recent:
+                if line not in merged:
+                    merged.append(line)
+            return merged
+        return self._runner.logs(recipe_name, max_lines=max_lines)
 
 
 class IsaacRosTopicTool(_IsaacTool):
@@ -879,6 +1328,11 @@ class IsaacRosTopicTool(_IsaacTool):
         hz = self._runner.run(["ros2", "topic", "hz", topic], timeout_s=sample_timeout_s)
         exists = info.ok
         streaming = hz.ok or "average rate:" in hz.stdout
+        schema = (
+            _interface_schema(self._runner, topic_type.stdout.strip())
+            if topic_type.ok and topic_type.stdout.strip()
+            else {}
+        )
         missing = [] if exists else [topic]
         if exists and not streaming:
             missing = [f"{topic}:messages"]
@@ -901,6 +1355,7 @@ class IsaacRosTopicTool(_IsaacTool):
             topic=topic,
             info=info.stdout,
             topic_type=topic_type.stdout.strip(),
+            schema=schema,
             hz=hz.stdout,
             command={"info": info.args, "type": topic_type.args, "hz": hz.args},
         )
@@ -921,6 +1376,7 @@ class IsaacRosTopicTool(_IsaacTool):
             dict: Observability payload with message text and command logs.
         """
         result = self._runner.run(["ros2", "topic", "echo", "--once", topic], timeout_s=timeout_s)
+        parsed_message = _safe_yaml_parse(result.stdout)
         payload = _stateful_payload(
             ok=result.ok,
             state="message_received" if result.ok else "no_message",
@@ -933,6 +1389,7 @@ class IsaacRosTopicTool(_IsaacTool):
             recent_logs=recent_logs_from_results([result]),
             topic=topic,
             message=result.stdout,
+            parsed_message=parsed_message,
             command=result.args,
         )
         return ToolResult(payload, text=_result_text(payload))
@@ -1110,40 +1567,136 @@ class IsaacRosActionTool(_IsaacTool):
             )
             return ToolResult(payload, text=_result_text(payload))
 
+        resolved_action_type = _resolved_action_type(self._runner, action_type)
+        schema = _interface_schema(self._runner, resolved_action_type)
+        parsed_goal = _safe_yaml_parse(goal_yaml)
+        missing_goal_fields = _missing_goal_fields(parsed_goal, schema)
+        goal_template = _goal_template_from_schema(schema)
+        if missing_goal_fields:
+            payload = _stateful_payload(
+                ok=False,
+                state="invalid_goal_schema",
+                summary=f"Action goal for {action_name} is missing required goal fields",
+                missing=missing_goal_fields,
+                next_suggested_actions=[
+                    "Build goal_yaml with every field in the returned goal_template.",
+                    "Call watch_action to inspect the action schema before retrying.",
+                ],
+                recent_logs=[
+                    f"Missing goal fields: {', '.join(missing_goal_fields)}",
+                    f"Action type: {resolved_action_type}",
+                ],
+                action_name=action_name,
+                action_type=resolved_action_type,
+                requested_action_type=action_type,
+                schema=schema,
+                schema_summary=_schema_summary(schema),
+                goal_template=goal_template,
+                goal=goal_yaml,
+                parsed_goal=parsed_goal,
+                command=preflight.args,
+                stdout="",
+                stderr="",
+                action_servers=server_count,
+                action_clients=client_count,
+                terminal_status="",
+                workflow_status="",
+            )
+            return ToolResult(payload, text=_result_text(payload))
+        min_timeout_s = MIN_ACTION_TIMEOUTS.get(action_name)
+        if min_timeout_s is not None and timeout_s < min_timeout_s:
+            payload = _stateful_payload(
+                ok=False,
+                state="invalid_action_timeout",
+                summary=(
+                    f"Action goal for {action_name} requested timeout_s={timeout_s}, "
+                    f"below the recommended minimum {min_timeout_s}"
+                ),
+                missing=[],
+                next_suggested_actions=[
+                    f"Retry send_goal with timeout_s >= {min_timeout_s}.",
+                    "Long-running manipulation actions can destabilize ROS action servers if the client is killed early.",
+                    "Call watch_action and logs_recipe before retrying if a previous attempt timed out.",
+                ],
+                recent_logs=[
+                    f"Requested timeout_s={timeout_s}",
+                    f"Minimum timeout_s for {action_name} is {min_timeout_s}",
+                ],
+                action_name=action_name,
+                action_type=resolved_action_type,
+                requested_action_type=action_type,
+                schema=schema,
+                schema_summary=_schema_summary(schema),
+                goal_template=goal_template,
+                goal=goal_yaml,
+                parsed_goal=parsed_goal,
+                command=preflight.args,
+                stdout="",
+                stderr="",
+                action_servers=server_count,
+                action_clients=client_count,
+                terminal_status="",
+                workflow_status="",
+                recommended_timeout_s=min_timeout_s,
+            )
+            return ToolResult(payload, text=_result_text(payload))
         command = ["ros2", "action", "send_goal", "--feedback", action_name, action_type, goal_yaml]
-        command[5] = _resolved_action_type(self._runner, action_type)
+        command[5] = resolved_action_type
         result = self._runner.run(command, timeout_s=timeout_s)
         accepted = "Goal accepted" in result.stdout
         terminal_match = re.search(r"Goal finished with status:\s*([A-Z_]+)", result.stdout)
         terminal_status = terminal_match.group(1) if terminal_match else ""
         workflow_match = re.search(r"workflow_status:\s*([0-9]+)", result.stdout)
         workflow_status = workflow_match.group(1) if workflow_match else ""
+        parsed_output = _parse_action_stdout(result.stdout)
         timed_out = result.returncode == 124 or "Timed out after" in result.stderr
         terminal_failure = terminal_status and terminal_status != "SUCCEEDED"
+        no_terminal_status = accepted and not terminal_status
         command_logs = recent_logs_from_results([result], max_lines=80)
         action_error_summary = _critical_log_lines(command_logs, max_lines=24)
+        related_recipe = _recipe_logs_for_action(action_name)
+        if related_recipe and (terminal_failure or not terminal_status):
+            recipe_logs = self._runner.logs(related_recipe, max_lines=240) if hasattr(self._runner, "logs") else []
+            related_errors = _critical_log_lines(recipe_logs, max_lines=24)
+            action_error_summary = (action_error_summary + related_errors)[-24:]
         if (terminal_failure or not result.ok) and not action_error_summary:
             action_error_summary = [line for line in command_logs if line.strip()][-12:]
+        if no_terminal_status and not action_error_summary:
+            action_error_summary = [
+                "Goal was accepted, but ros2 action send_goal returned no terminal status; inspect workflow logs before retrying."
+            ]
         if terminal_status == "SUCCEEDED":
             state = "goal_succeeded"
             summary = f"Action goal for {action_name} finished with status SUCCEEDED"
+            ok = True
         elif terminal_failure:
             state = f"goal_{terminal_status.lower()}"
             summary = f"Action goal for {action_name} finished with status {terminal_status}"
-        elif result.ok:
-            state = "goal_sent"
-            summary = f"Action goal sent to {action_name}"
+            ok = False
         elif timed_out and accepted:
             state = "goal_timeout"
             summary = f"Action goal for {action_name} timed out after being accepted"
+            ok = False
         elif timed_out:
             state = "action_timeout"
             summary = f"Timed out waiting on action {action_name}"
+            ok = False
+        elif no_terminal_status:
+            state = "goal_status_unknown"
+            summary = (
+                f"Action goal for {action_name} was accepted but no terminal status was returned"
+            )
+            ok = False
+        elif result.ok:
+            state = "goal_status_unknown"
+            summary = f"Action command for {action_name} exited without a terminal status"
+            ok = False
         else:
             state = "goal_failed"
             summary = f"Action goal failed for {action_name}"
+            ok = False
         payload = _stateful_payload(
-            ok=result.ok and not terminal_failure,
+            ok=ok,
             state=state,
             summary=summary,
             missing=[] if result.ok or accepted else [action_name],
@@ -1151,12 +1704,20 @@ class IsaacRosActionTool(_IsaacTool):
                 "Call isaac_perception.inspect_scene to verify the scene changed.",
                 "Call watch_action to inspect the action server if the goal failed.",
                 "Call isaac_ros_launch.logs_recipe for orchestration logs.",
+                "Treat goal_status_unknown as incomplete until logs or a later action result proves success.",
             ],
             recent_logs=command_logs,
             action_error_summary=action_error_summary,
             action_name=action_name,
-            action_type=action_type,
+            action_type=resolved_action_type,
+            requested_action_type=action_type,
+            schema=schema,
+            schema_summary=_schema_summary(schema),
+            goal_template=goal_template,
             goal=goal_yaml,
+            parsed_goal=parsed_goal,
+            parsed_result=parsed_output["result"],
+            parsed_feedback=parsed_output["feedback"],
             command=result.args,
             stdout=result.stdout,
             stderr=result.stderr,
@@ -1164,6 +1725,7 @@ class IsaacRosActionTool(_IsaacTool):
             workflow_status=workflow_status,
             action_servers=server_count,
             action_clients=client_count,
+            recommended_timeout_s=MIN_ACTION_TIMEOUTS.get(action_name),
         )
         return ToolResult(payload, text=_result_text(payload))
 
@@ -1182,6 +1744,8 @@ class IsaacRosActionTool(_IsaacTool):
             dict: Observability payload with action server info.
         """
         result = self._runner.run(["ros2", "action", "info", action_name], timeout_s=timeout_s)
+        action_type, type_result = _action_type_from_list(self._runner, action_name, timeout_s=timeout_s)
+        schema = _interface_schema(self._runner, action_type) if action_type else {}
         server_count = _action_count(result.stdout, "Action servers")
         client_count = _action_count(result.stdout, "Action clients")
         available = result.ok and server_count > 0
@@ -1195,8 +1759,13 @@ class IsaacRosActionTool(_IsaacTool):
             ),
             missing=[] if available else [action_name],
             next_suggested_actions=["Start or inspect the launch recipe that provides this action."],
-            recent_logs=recent_logs_from_results([result]),
+            recent_logs=recent_logs_from_results([result, type_result]),
             action_name=action_name,
+            action_type=action_type,
+            schema=schema,
+            schema_summary=_schema_summary(schema),
+            goal_template=_goal_template_from_schema(schema),
+            recommended_timeout_s=MIN_ACTION_TIMEOUTS.get(action_name),
             info=result.stdout,
             action_servers=server_count,
             action_clients=client_count,
@@ -1226,26 +1795,44 @@ class IsaacRosServiceTool(_IsaacTool):
         """
         service_type = self._runner.run(["ros2", "service", "type", service_name], timeout_s=timeout_s)
         service_list = self._runner.run(["ros2", "service", "list"], timeout_s=timeout_s)
+        action_list = self._runner.run(["ros2", "action", "list"], timeout_s=timeout_s)
         services = _items_from_output(service_list)
+        actions = _items_from_output(action_list)
         available = service_type.ok and service_name in services
+        is_action = service_name in actions
+        schema = (
+            _interface_schema(self._runner, service_type.stdout.strip())
+            if service_type.ok and service_type.stdout.strip()
+            else {}
+        )
         payload = _stateful_payload(
             ok=available,
-            state="available" if available else "missing",
+            state="available" if available else ("resource_is_action" if is_action else "missing"),
             summary=(
                 f"Service {service_name} is available"
                 if available
+                else f"{service_name} is an action, not a service"
+                if is_action
                 else f"Service {service_name} is not available"
             ),
-            missing=[] if available else [service_name],
+            missing=[] if available or is_action else [service_name],
             next_suggested_actions=[
+                "Call isaac_ros_action.watch_action or send_goal when this resource is an action.",
                 "Start or inspect the launch recipe that provides this service.",
                 "Call isaac_ros_graph.list_graph to inspect available services.",
             ],
-            recent_logs=recent_logs_from_results([service_type, service_list]),
+            recent_logs=recent_logs_from_results([service_type, service_list, action_list]),
             service_name=service_name,
             service_type=service_type.stdout.strip(),
+            schema=schema,
             services=services,
-            command={"type": service_type.args, "list": service_list.args},
+            actions=actions,
+            resource_category_corrections=(
+                [{"requested": f"services:{service_name}", "actual": f"actions:{service_name}"}]
+                if is_action and not available
+                else []
+            ),
+            command={"type": service_type.args, "list": service_list.args, "action_list": action_list.args},
         )
         return ToolResult(payload, text=_result_text(payload))
 
@@ -1286,6 +1873,9 @@ class IsaacRosServiceTool(_IsaacTool):
 
         command = ["ros2", "service", "call", service_name, resolved_type, request_yaml]
         result = self._runner.run(command, timeout_s=timeout_s)
+        parsed_request = _safe_yaml_parse(request_yaml)
+        parsed_response = _parse_service_stdout(result.stdout)
+        schema = _interface_schema(self._runner, resolved_type)
         payload = _stateful_payload(
             ok=result.ok,
             state="service_called" if result.ok else "service_call_failed",
@@ -1302,10 +1892,256 @@ class IsaacRosServiceTool(_IsaacTool):
             recent_logs=recent_logs_from_results([result]),
             service_name=service_name,
             service_type=resolved_type,
+            schema=schema,
             request=request_yaml,
+            parsed_request=parsed_request,
+            parsed_response=parsed_response,
             command=result.args,
             stdout=result.stdout,
             stderr=result.stderr,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+
+class IsaacRosParamTool(_IsaacTool):
+    """Inspect and change ROS parameters on live nodes."""
+
+    def get_name(self) -> str:
+        return "isaac_ros_param"
+
+    @tool_method
+    def list_params(self, node_name: str, timeout_s: float = 10.0) -> ToolResult[dict[str, Any]]:
+        """
+        List parameters declared by a ROS node.
+
+        [[if:text]]Text output: Parameter names, command status, and suggested next checks.[[/if:text]]
+
+        Args:
+            node_name: ROS node name.
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with parameter names and raw output.
+        """
+        result = self._runner.run(["ros2", "param", "list", node_name], timeout_s=timeout_s)
+        params = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip() and not line.strip().endswith(":")
+        ]
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="params_ready" if result.ok else "params_unavailable",
+            summary=f"Listed parameters for {node_name}" if result.ok else f"Could not list parameters for {node_name}",
+            missing=[] if result.ok else [node_name],
+            next_suggested_actions=[
+                "Call get_param for values that affect the current behavior.",
+                "Call inspect_node if the node name may be wrong.",
+            ],
+            recent_logs=recent_logs_from_results([result]),
+            node_name=node_name,
+            params=params,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            command=result.args,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+    @tool_method
+    def get_param(self, node_name: str, param_name: str, timeout_s: float = 10.0) -> ToolResult[dict[str, Any]]:
+        """
+        Read one ROS parameter value.
+
+        [[if:text]]Text output: Parameter value, command status, and raw output.[[/if:text]]
+
+        Args:
+            node_name: ROS node name.
+            param_name: Parameter name.
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with parsed parameter value where possible.
+        """
+        result = self._runner.run(["ros2", "param", "get", node_name, param_name], timeout_s=timeout_s)
+        parsed_value: Any | None = None
+        match = re.search(r"^[^:]+:\s*(.*)$", result.stdout.strip())
+        if match:
+            parsed_value = _safe_yaml_parse(match.group(1))
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="param_ready" if result.ok else "param_unavailable",
+            summary=(
+                f"Read parameter {param_name} from {node_name}"
+                if result.ok
+                else f"Could not read parameter {param_name} from {node_name}"
+            ),
+            missing=[] if result.ok else [f"{node_name}:{param_name}"],
+            next_suggested_actions=["Use set_param only when changing this value is needed for the task."],
+            recent_logs=recent_logs_from_results([result]),
+            node_name=node_name,
+            param_name=param_name,
+            value=parsed_value,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            command=result.args,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+    @tool_method
+    def set_param(
+        self,
+        node_name: str,
+        param_name: str,
+        value: str,
+        timeout_s: float = 10.0,
+    ) -> ToolResult[dict[str, Any]]:
+        """
+        Set one ROS parameter value.
+
+        [[if:text]]Text output: Parameter set command status and raw output.[[/if:text]]
+
+        Args:
+            node_name: ROS node name.
+            param_name: Parameter name.
+            value: Parameter value as ROS CLI text, JSON, YAML scalar, or string.
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with command status and parsed value where possible.
+        """
+        result = self._runner.run(["ros2", "param", "set", node_name, param_name, value], timeout_s=timeout_s)
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="param_set" if result.ok else "param_set_failed",
+            summary=(
+                f"Set parameter {param_name} on {node_name}"
+                if result.ok
+                else f"Failed to set parameter {param_name} on {node_name}"
+            ),
+            missing=[] if result.ok else [f"{node_name}:{param_name}"],
+            next_suggested_actions=["Call get_param to verify the new value if the downstream behavior depends on it."],
+            recent_logs=recent_logs_from_results([result]),
+            node_name=node_name,
+            param_name=param_name,
+            value=value,
+            parsed_value=_safe_yaml_parse(value),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            command=result.args,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+    @tool_method
+    def dump_params(self, node_name: str, timeout_s: float = 10.0) -> ToolResult[dict[str, Any]]:
+        """
+        Dump a ROS node's parameters as YAML.
+
+        [[if:text]]Text output: Parameter dump command status and parsed YAML when available.[[/if:text]]
+
+        Args:
+            node_name: ROS node name.
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with parsed parameter dump and raw output.
+        """
+        result = self._runner.run(["ros2", "param", "dump", node_name], timeout_s=timeout_s)
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="params_dumped" if result.ok else "params_dump_failed",
+            summary=f"Dumped parameters for {node_name}" if result.ok else f"Could not dump parameters for {node_name}",
+            missing=[] if result.ok else [node_name],
+            next_suggested_actions=["Use this dump to compare runtime parameters with launch/config expectations."],
+            recent_logs=recent_logs_from_results([result]),
+            node_name=node_name,
+            params=_safe_yaml_parse(result.stdout),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            command=result.args,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+
+class IsaacRosTfTool(_IsaacTool):
+    """Inspect ROS TF frame state."""
+
+    def get_name(self) -> str:
+        return "isaac_ros_tf"
+
+    @tool_method
+    def list_frames(self, timeout_s: float = 10.0) -> ToolResult[dict[str, Any]]:
+        """
+        Query the visible TF frame graph.
+
+        [[if:text]]Text output: TF query status, raw frame output, and suggested transform checks.[[/if:text]]
+
+        Args:
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with raw TF frame output.
+        """
+        result = self._runner.run(["ros2", "run", "tf2_tools", "view_frames"], timeout_s=timeout_s)
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="frames_ready" if result.ok else "frames_unavailable",
+            summary="TF frames queried" if result.ok else "Could not query TF frames",
+            missing=[] if result.ok else ["tf_frames"],
+            next_suggested_actions=[
+                "Call lookup_transform for frames needed by a goal or camera observation.",
+                "Inspect static_transforms or workflow logs if expected frames are missing.",
+            ],
+            recent_logs=recent_logs_from_results([result]),
+            frames=_items_from_output(result),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            command=result.args,
+        )
+        return ToolResult(payload, text=_result_text(payload))
+
+    @tool_method
+    def lookup_transform(
+        self,
+        target_frame: str,
+        source_frame: str,
+        timeout_s: float = 5.0,
+    ) -> ToolResult[dict[str, Any]]:
+        """
+        Lookup the latest transform between two ROS frames.
+
+        [[if:text]]Text output: Transform text, command status, and raw output.[[/if:text]]
+
+        Args:
+            target_frame: Target frame.
+            source_frame: Source frame.
+            timeout_s: Maximum command time in seconds.
+
+        Returns:
+            dict: Observability payload with transform output.
+        """
+        result = self._runner.run(
+            ["ros2", "run", "tf2_ros", "tf2_echo", target_frame, source_frame, "--once"],
+            timeout_s=timeout_s,
+        )
+        payload = _stateful_payload(
+            ok=result.ok,
+            state="transform_ready" if result.ok else "transform_unavailable",
+            summary=(
+                f"Transform {target_frame} <- {source_frame} is available"
+                if result.ok
+                else f"Transform {target_frame} <- {source_frame} is unavailable"
+            ),
+            missing=[] if result.ok else [f"{target_frame}<-{source_frame}"],
+            next_suggested_actions=[
+                "Use the transform frame names when building goals.",
+                "Inspect TF/static-transform launch logs if this transform is missing.",
+            ],
+            recent_logs=recent_logs_from_results([result]),
+            target_frame=target_frame,
+            source_frame=source_frame,
+            transform_text=result.stdout,
+            stderr=result.stderr,
+            command=result.args,
         )
         return ToolResult(payload, text=_result_text(payload))
 
@@ -1360,6 +2196,11 @@ class IsaacRosConfigTool(_IsaacTool):
             self._output_dir,
             "ros2_control_controllers_sim_toolshed.yaml",
         )
+        moveit_controllers_path, host_moveit_controllers_path = _artifact_paths(
+            self._runner,
+            self._output_dir,
+            "moveit_sim_controllers_toolshed.yaml",
+        )
         behavior_tree_config = _read_yaml_file(
             self._runner,
             Path(params_dir) / "multi_object_pick_and_place_behavior_tree_params.yaml",
@@ -1373,6 +2214,10 @@ class IsaacRosConfigTool(_IsaacTool):
             self._runner,
             Path(robot_config_dir) / "ros2_control_controllers_sim.yaml",
         )
+        moveit_controllers_config = _read_yaml_file(
+            self._runner,
+            Path(robot_config_dir) / "moveit_sim_controllers.yaml",
+        )
         controller_params = (
             ros2_control_config
             .setdefault("controller_manager", {})
@@ -1380,6 +2225,9 @@ class IsaacRosConfigTool(_IsaacTool):
         )
         controller_params.pop("joint_state_broadcaster", None)
         ros2_control_config.pop("joint_state_broadcaster", None)
+        moveit_controllers_config.setdefault("trajectory_execution", {})[
+            "allowed_start_tolerance"
+        ] = MOVEIT_SIM_ALLOWED_START_TOLERANCE
         pick_place_bt = (
             behavior_tree_config
             .setdefault("behavior_tree_params", {})
@@ -1451,6 +2299,23 @@ class IsaacRosConfigTool(_IsaacTool):
         else:
             host_ros2_control_path.parent.mkdir(parents=True, exist_ok=True)
             host_ros2_control_path.write_text(ros2_control_text)
+        moveit_controllers_text = yaml.safe_dump(moveit_controllers_config, sort_keys=False)
+        if hasattr(self._runner, "write_file"):
+            write_moveit_controllers_result = self._runner.write_file(
+                moveit_controllers_path,
+                moveit_controllers_text,
+            )
+            if not write_moveit_controllers_result.ok:
+                raise RuntimeError(
+                    write_moveit_controllers_result.stderr
+                    or f"Failed to write MoveIt controller config to {moveit_controllers_path}"
+                )
+            if str(moveit_controllers_path) != str(host_moveit_controllers_path):
+                host_moveit_controllers_path.parent.mkdir(parents=True, exist_ok=True)
+                host_moveit_controllers_path.write_text(moveit_controllers_text)
+        else:
+            host_moveit_controllers_path.parent.mkdir(parents=True, exist_ok=True)
+            host_moveit_controllers_path.write_text(moveit_controllers_text)
         requested_ground_truth_pose = bool(use_ground_truth_pose_in_sim)
         requested_rviz_visualization = bool(enable_rviz_visualization)
         requested_nvblox = bool(enable_nvblox)
@@ -1491,6 +2356,7 @@ class IsaacRosConfigTool(_IsaacTool):
                 "enable_rviz_visualization": str(enable_rviz_visualization).lower(),
                 "controller_spawner_timeout": 60,
                 "ros2_controllers_file_path": str(ros2_control_path),
+                "moveit_controllers_file_path": str(moveit_controllers_path),
                 "sim_gt_asset_frame_id": "soup_can",
                 "object_class_id": "3",
                 "rt_detr_confidence_threshold": "0.5",
@@ -1527,11 +2393,14 @@ class IsaacRosConfigTool(_IsaacTool):
                 "host_blackboard_config_path": str(host_blackboard_path),
                 "ros2_control_config_path": str(ros2_control_path),
                 "host_ros2_control_config_path": str(host_ros2_control_path),
+                "moveit_controllers_config_path": str(moveit_controllers_path),
+                "host_moveit_controllers_config_path": str(host_moveit_controllers_path),
             },
             config=config,
             behavior_tree_config=behavior_tree_config,
             blackboard_config=blackboard_config,
             ros2_control_config=ros2_control_config,
+            moveit_controllers_config=moveit_controllers_config,
             warnings=warnings,
             requested_use_ground_truth_pose_in_sim=requested_ground_truth_pose,
             requested_enable_rviz_visualization=requested_rviz_visualization,
@@ -1705,7 +2574,7 @@ class IsaacPickPlaceTool(_IsaacTool):
         self,
         drop_pose: str = "",
         frame_id: str = "base_link",
-        timeout_s: float = 180.0,
+        timeout_s: float = 900.0,
     ) -> ToolResult[dict[str, Any]]:
         """
         Send the tutorial single-bin pick-and-place action goal.
@@ -1729,7 +2598,7 @@ class IsaacPickPlaceTool(_IsaacTool):
         target_poses: str = "",
         class_ids: str = "",
         frame_id: str = "base_link",
-        timeout_s: float = 180.0,
+        timeout_s: float = 900.0,
     ) -> ToolResult[dict[str, Any]]:
         """
         Send the tutorial multi-bin pick-and-place action goal.

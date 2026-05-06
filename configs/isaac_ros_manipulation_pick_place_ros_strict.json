@@ -1,0 +1,100 @@
+{
+  "isaac_ros_graph": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_launch": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 1200,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_topic": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_action": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 900,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_service": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_param": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_tf": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  }
+}

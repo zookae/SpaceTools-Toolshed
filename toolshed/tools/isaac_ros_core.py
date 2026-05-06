@@ -92,6 +92,7 @@ class LaunchRecipe:
     produced_topics: list[str] = field(default_factory=list)
     produced_actions: list[str] = field(default_factory=list)
     produced_services: list[str] = field(default_factory=list)
+    event_driven_topics: list[str] = field(default_factory=list)
     frames: list[str] = field(default_factory=list)
     render_topics: list[str] = field(default_factory=list)
     cleanup_patterns: list[str] = field(default_factory=list)
@@ -116,6 +117,7 @@ class LaunchRecipe:
             "produced_topics": self.produced_topics,
             "produced_actions": self.produced_actions,
             "produced_services": self.produced_services,
+            "event_driven_topics": self.event_driven_topics,
             "frames": self.frames,
             "render_topics": self.render_topics,
             "cleanup_patterns": self.cleanup_patterns,
@@ -268,6 +270,7 @@ RECIPES: dict[str, LaunchRecipe] = {
             "/cumotion/motion_plan",
         ],
         produced_topics=["/detections", "/pose_estimation/output"],
+        event_driven_topics=["/detections", "/pose_estimation/output"],
         render_topics=["/front_stereo_camera/left/image_raw", "/front_stereo_camera/depth/ground_truth"],
         cleanup_patterns=[
             "workflows.launch.py manipulator_workflow_config:=",
@@ -603,6 +606,81 @@ LD_LIBRARY_PATH="$ros_lib:${LD_LIBRARY_PATH:-}" ldd "$ros_lib/libisaac_ros_cumot
                 _timeout_text(exc.stderr) + "\nTimed out after 30s",
             )
 
+    def ensure_isaac_sim_camera_resolution_compatibility(self) -> CommandResult:
+        """Install an import overlay so Isaac Sim launch constants match headless camera size."""
+        width = int(os.getenv("ISAAC_IMAGE_PUBLISHER_WIDTH", "1920"))
+        height = int(os.getenv("ISAAC_IMAGE_PUBLISHER_HEIGHT", "1200"))
+        overlay_root = "/tmp/toolshed_isaac_ros_manipulator_overlay"
+        if overlay_root not in self._pythonpath_prepend:
+            self._pythonpath_prepend.insert(0, overlay_root)
+
+        if not self.container_name:
+            return CommandResult(
+                ["ensure_isaac_sim_camera_resolution_compatibility"],
+                0,
+                f"HAWK_IMAGE_WIDTH={width}\nHAWK_IMAGE_HEIGHT={height}\noverlay={overlay_root}",
+                "Not running in a container",
+            )
+
+        script = f"""
+set -e
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+width = {width}
+height = {height}
+overlay_root = Path("/tmp/toolshed_isaac_ros_manipulator_overlay")
+package_dir = overlay_root / "isaac_manipulator_ros_python_utils"
+package_dir.mkdir(parents=True, exist_ok=True)
+
+candidates = sorted(
+    list(Path("/workspaces/isaac_ros-dev").glob(
+        "*/isaac_manipulator_ros_python_utils/isaac_manipulator_ros_python_utils/constants.py"
+    ))
+    + list(Path("/opt/ros").glob(
+        "*/lib/python*/site-packages/isaac_manipulator_ros_python_utils/constants.py"
+    ))
+)
+if not candidates:
+    raise SystemExit("could not find installed isaac_manipulator_ros_python_utils constants")
+source = candidates[-1]
+init_source = source.parent / "__init__.py"
+if not init_source.exists():
+    raise SystemExit("could not find installed isaac_manipulator_ros_python_utils __init__.py")
+init_text = init_source.read_text()
+(package_dir / "__init__.py").write_text(
+    "from pkgutil import extend_path\\n"
+    "__path__ = extend_path(__path__, __name__)\\n"
+    + init_text
+)
+text = source.read_text()
+text, width_count = re.subn(r"^HAWK_IMAGE_WIDTH\\s*=\\s*\\d+\\s*$", f"HAWK_IMAGE_WIDTH = {{width}}", text, count=1, flags=re.MULTILINE)
+text, height_count = re.subn(r"^HAWK_IMAGE_HEIGHT\\s*=\\s*\\d+\\s*$", f"HAWK_IMAGE_HEIGHT = {{height}}", text, count=1, flags=re.MULTILINE)
+if width_count != 1 or height_count != 1:
+    raise SystemExit("HAWK image constant patch anchor not found")
+target = package_dir / "constants.py"
+target.write_text(text)
+print(f"overlay={{overlay_root}}")
+print(f"source={{source}}")
+print(f"target={{target}}")
+print(f"HAWK_IMAGE_WIDTH={{width}}")
+print(f"HAWK_IMAGE_HEIGHT={{height}}")
+PY
+python3 -m py_compile /tmp/toolshed_isaac_ros_manipulator_overlay/isaac_manipulator_ros_python_utils/constants.py
+"""
+        command = ["docker", "exec", "-i", self.container_name, "bash", "-lc", script]
+        try:
+            proc = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+            return CommandResult(command, proc.returncode, proc.stdout, proc.stderr)
+        except subprocess.TimeoutExpired as exc:
+            return CommandResult(
+                command,
+                124,
+                _timeout_text(exc.stdout),
+                _timeout_text(exc.stderr) + "\nTimed out after 30s",
+            )
+
     def ensure_cumotion_goalset_compatibility(self) -> CommandResult:
         """Install an import overlay for cuMotion goal-set planner compatibility fixes."""
         overlay_root = "/tmp/toolshed_isaac_ros_cumotion_overlay"
@@ -643,6 +721,16 @@ if old_threading_import not in text:
     raise SystemExit("threading import patch anchor not found")
 text = text.replace(old_threading_import, new_threading_import, 1)
 
+old_rclpy_import = "import rclpy\nfrom rclpy.action import ActionServer\n"
+new_rclpy_import = (
+    "import rclpy\n"
+    "from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy\n"
+    "from rclpy.action import ActionServer\n"
+)
+if old_rclpy_import not in text:
+    raise SystemExit("rclpy goal-event import patch anchor not found")
+text = text.replace(old_rclpy_import, new_rclpy_import, 1)
+
 old_lock_init = (
     "    def __init__(self):\n"
     "        super().__init__()\n"
@@ -658,11 +746,38 @@ if old_lock_init not in text:
     raise SystemExit("planner lock init patch anchor not found")
 text = text.replace(old_lock_init, new_lock_init, 1)
 
+old_action_server_timeout = (
+    "        self._goal_set_planner_server = ActionServer(\n"
+    "            self, MotionPlan, 'cumotion/motion_plan', self.motion_plan_execute_callback\n"
+    "        )\n"
+)
+new_action_server_timeout = (
+    "        self._goal_set_planner_server = ActionServer(\n"
+    "            self,\n"
+    "            MotionPlan,\n"
+    "            'cumotion/motion_plan',\n"
+    "            self.motion_plan_execute_callback,\n"
+    "            result_timeout=2147483647,\n"
+    "        )\n"
+)
+if old_action_server_timeout not in text:
+    raise SystemExit("action result timeout patch anchor not found")
+text = text.replace(old_action_server_timeout, new_action_server_timeout, 1)
+
 old_callback_def = "    def motion_plan_execute_callback(self, goal_handle):\n"
 new_callback_def = (
     "    def motion_plan_execute_callback(self, goal_handle):\n"
     "        with self._toolshed_motion_plan_lock:\n"
     "            return self._toolshed_motion_plan_execute_callback(goal_handle)\n"
+    "\n"
+    "    def _toolshed_mark_goal_succeeded(self, goal_handle):\n"
+    "        try:\n"
+    "            if getattr(goal_handle, 'is_active', False):\n"
+    "                goal_handle._update_state(_rclpy.GoalEvent.SUCCEED)\n"
+    "        except Exception as exc:\n"
+    "            self.get_logger().warning(\n"
+    "                f'Toolshed compatibility: could not mark motion plan goal succeeded: {exc}'\n"
+    "            )\n"
     "\n"
     "    def _toolshed_motion_plan_execute_callback(self, goal_handle):\n"
 )
@@ -782,7 +897,7 @@ patched_lines = []
 for line in text.splitlines(keepends=True):
     if line.lstrip() == "return result\n":
         indent = line[: len(line) - len(line.lstrip())]
-        patched_lines.append(f"{indent}goal_handle.succeed()\n")
+        patched_lines.append(f"{indent}self._toolshed_mark_goal_succeeded(goal_handle)\n")
     patched_lines.append(line)
 text = "".join(patched_lines)
 

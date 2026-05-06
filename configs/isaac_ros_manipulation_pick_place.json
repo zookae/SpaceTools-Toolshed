@@ -69,6 +69,34 @@
       "no_output_vars": false
     }
   },
+  "isaac_ros_param": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
+  "isaac_ros_tf": {
+    "num_actors": 1,
+    "resources": {
+      "num_cpus": 0.25,
+      "num_gpus": 0
+    },
+    "conda_env": null,
+    "timeout": 600,
+    "args": {
+      "output_dir": "outputs/isaac_ros",
+      "no_output_image": false,
+      "no_output_vars": false
+    }
+  },
   "isaac_ros_config": {
     "num_actors": 1,
     "resources": {

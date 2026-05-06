@@ -41,6 +41,8 @@ TOOL_MANIFEST = {
     "isaac_ros_topic": "toolshed.tools.isaac_ros:IsaacRosTopicTool",
     "isaac_ros_action": "toolshed.tools.isaac_ros:IsaacRosActionTool",
     "isaac_ros_service": "toolshed.tools.isaac_ros:IsaacRosServiceTool",
+    "isaac_ros_param": "toolshed.tools.isaac_ros:IsaacRosParamTool",
+    "isaac_ros_tf": "toolshed.tools.isaac_ros:IsaacRosTfTool",
     "isaac_ros_config": "toolshed.tools.isaac_ros:IsaacRosConfigTool",
     "isaac_ros_scene": "toolshed.tools.isaac_ros:IsaacRosSceneTool",
     "isaac_perception": "toolshed.tools.isaac_ros:IsaacPerceptionTool",
